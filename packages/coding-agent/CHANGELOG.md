@@ -5,6 +5,7 @@
 ### Added
 
 - Added `ctx.modelRegistry.stream()` and `streamSimple()` for extension model calls through configured providers with resolved authentication ([#8964](https://github.com/earendil-works/pi/issues/8964)).
+- Added `/plan` for browser-reviewed planning and execution, with `/mode` model configuration, `SYSTEM_PLANNING.md` customization, and atomic whole/diff plan editing.
 
 ### Changed
 

@@ -2,6 +2,7 @@ import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { ModelSelectorComponent } from "../src/modes/interactive/components/model-selector.ts";
+import { PlanModeSelectorComponent } from "../src/modes/interactive/components/plan-mode-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
@@ -34,11 +35,12 @@ describe("model selector", () => {
 			],
 		});
 		const currentModel = harness.getModel("current-model")!;
+		const browsedModel = harness.getModel("browsed-model")!;
 		const selector = new ModelSelectorComponent(
 			createFakeTui(),
 			currentModel,
 			harness.session.modelRuntime,
-			[],
+			[{ model: currentModel }, { model: browsedModel }],
 			() => {},
 			() => {},
 		);
@@ -77,6 +79,57 @@ describe("model selector", () => {
 		expect(saveDefault).not.toHaveBeenCalled();
 		selector.handleInput("\x12");
 		expect(saveDefault).toHaveBeenCalledWith(currentModel);
+	});
+
+	it("can select the calling workflow's default model", async () => {
+		harness = await createHarness();
+		const selectDefault = vi.fn();
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			undefined,
+			harness.session.modelRuntime,
+			[],
+			() => {},
+			() => {},
+			undefined,
+			undefined,
+			undefined,
+			selectDefault,
+		);
+
+		expect(stripAnsi(selector.render(120).join("\n"))).toContain("Default model [session]");
+		selector.handleInput("\r");
+		expect(selectDefault).toHaveBeenCalledOnce();
+	});
+
+	it("uses settings submenus to configure each plan mode", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "reasoner", reasoning: true },
+				{ id: "fast", reasoning: false },
+			],
+		});
+		const onChange = vi.fn();
+		const selector = new PlanModeSelectorComponent(
+			createFakeTui(),
+			harness.session.modelRuntime,
+			[
+				{ model: harness.getModel("reasoner")!, thinkingLevel: "high" },
+				{ model: harness.getModel("fast")!, thinkingLevel: "off" },
+			],
+			{},
+			onChange,
+			() => {},
+		);
+
+		selector.handleInput("\r");
+		selector.handleInput("\r");
+		expect(onChange).toHaveBeenLastCalledWith("planner", undefined);
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\r");
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\r");
+		expect(onChange).toHaveBeenLastCalledWith("programming", expect.objectContaining({ id: "reasoner" }));
 	});
 
 	it("lists every catalog that failed to refresh", async () => {

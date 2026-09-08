@@ -22,6 +22,8 @@ interface ModelItem {
 	model: Model<any>;
 }
 
+export type ModelSelectorSource = Pick<ModelRuntime, "getAvailableSnapshot" | "getError" | "getModel" | "refresh">;
+
 interface ScopedModelItem {
 	model: Model<any>;
 	thinkingLevel?: string;
@@ -54,11 +56,13 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private scopedModelItems: ModelItem[] = [];
 	private activeModels: ModelItem[] = [];
 	private filteredModels: ModelItem[] = [];
+	private showDefaultOption = false;
 	private selectedIndex: number = 0;
 	private currentModel?: Model<any>;
-	private modelRuntime: ModelRuntime;
+	private modelRuntime: ModelSelectorSource;
 	private onSelectCallback: (model: Model<any>) => void;
 	private onSelectAsDefaultCallback?: (model: Model<any>) => void;
+	private onSelectDefaultCallback?: () => void;
 	private onCancelCallback: () => void;
 	private errorMessage?: string;
 	private refreshStatusMessage = "Refreshing model catalogs…";
@@ -76,13 +80,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	constructor(
 		tui: TUI,
 		currentModel: Model<any> | undefined,
-		modelRuntime: ModelRuntime,
+		modelRuntime: ModelSelectorSource,
 		scopedModels: ReadonlyArray<ScopedModelItem>,
 		onSelect: (model: Model<any>) => void,
 		onCancel: () => void,
 		initialSearchInput?: string,
 		onSelectAsDefault?: (model: Model<any>) => void,
 		defaultModel?: DefaultModelReference,
+		onSelectDefault?: () => void,
 	) {
 		super();
 
@@ -91,6 +96,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.modelRuntime = modelRuntime;
 		this.scopedModels = scopedModels;
 		this.defaultModel = defaultModel;
+		this.onSelectDefaultCallback = onSelectDefault;
 		this.scope = scopedModels.length > 0 ? "scoped" : "all";
 		this.onSelectCallback = onSelect;
 		this.onSelectAsDefaultCallback = onSelectAsDefault;
@@ -99,7 +105,6 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		// Add top border
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
-
 		// Add hint about model filtering
 		if (scopedModels.length > 0) {
 			this.scopeText = new Text(this.getScopeText(), 0, 0);
@@ -118,9 +123,15 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.searchInput.setValue(initialSearchInput);
 		}
 		this.searchInput.onSubmit = () => {
+			if (this.showDefaultOption && this.selectedIndex === 0) {
+				this.dispose();
+				this.onSelectDefaultCallback?.();
+				return;
+			}
 			// Enter on search input selects the first filtered item
-			if (this.filteredModels[this.selectedIndex]) {
-				this.handleSelect(this.filteredModels[this.selectedIndex].model);
+			const selected = this.filteredModels[this.selectedIndex - (this.showDefaultOption ? 1 : 0)];
+			if (selected) {
+				this.handleSelect(selected.model);
 			}
 		};
 		this.addChild(this.searchInput);
@@ -176,9 +187,15 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		}));
 		this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
 		this.filteredModels = this.activeModels;
+		this.showDefaultOption = this.onSelectDefaultCallback !== undefined;
 		const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
 		this.selectedIndex =
-			currentIndex >= 0 ? currentIndex : Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
+			currentIndex >= 0
+				? currentIndex + (this.showDefaultOption ? 1 : 0)
+				: Math.min(
+						this.selectedIndex,
+						Math.max(0, this.filteredModels.length + (this.showDefaultOption ? 1 : 0) - 1),
+					);
 	}
 
 	private async refreshModels(): Promise<void> {
@@ -269,7 +286,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.scope = scope;
 		this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
 		const currentIndex = this.activeModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
-		this.selectedIndex = currentIndex >= 0 ? currentIndex : 0;
+		this.selectedIndex = currentIndex >= 0 ? currentIndex + (this.onSelectDefaultCallback ? 1 : 0) : 0;
 		this.filterModels(this.searchInput.getValue());
 		if (this.scopeText) {
 			this.scopeText.setText(this.getScopeText());
@@ -277,6 +294,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private filterModels(query: string): void {
+		this.showDefaultOption =
+			this.onSelectDefaultCallback !== undefined &&
+			(query.length === 0 || "default model".includes(query.trim().toLowerCase()));
 		if (query) {
 			const filtered = fuzzyFilter(this.activeModels, query, (item) => {
 				const defaultText = this.isDefaultModel(item.model) ? " default" : "";
@@ -298,23 +318,33 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		// When filtering by a query, move the selector to the top row so the best
 		// match is highlighted. When the query is cleared, keep the current position
 		// clamped to the (restored) list length.
-		this.selectedIndex = query ? 0 : Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length - 1));
+		this.selectedIndex = query
+			? 0
+			: Math.min(this.selectedIndex, Math.max(0, this.filteredModels.length + (this.showDefaultOption ? 1 : 0) - 1));
 		this.updateList();
 	}
 
 	private updateList(): void {
 		this.listContainer.clear();
 
+		const defaultOffset = this.showDefaultOption ? 1 : 0;
+		const selectableCount = this.filteredModels.length + defaultOffset;
 		const maxVisible = 10;
 		const startIndex = Math.max(
 			0,
-			Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredModels.length - maxVisible),
+			Math.min(this.selectedIndex - Math.floor(maxVisible / 2), selectableCount - maxVisible),
 		);
-		const endIndex = Math.min(startIndex + maxVisible, this.filteredModels.length);
+		const endIndex = Math.min(startIndex + maxVisible, selectableCount);
 
 		// Show visible slice of filtered models
 		for (let i = startIndex; i < endIndex; i++) {
-			const item = this.filteredModels[i];
+			if (this.showDefaultOption && i === 0) {
+				const cursor = i === this.selectedIndex ? theme.fg("accent", "→ ") : "  ";
+				const label = i === this.selectedIndex ? theme.fg("accent", "Default model") : "Default model";
+				this.listContainer.addChild(new Text(`${cursor}  ${label} ${theme.fg("muted", "[session]")}`, 0, 0));
+				continue;
+			}
+			const item = this.filteredModels[i - defaultOffset];
 			if (!item) continue;
 
 			const isSelected = i === this.selectedIndex;
@@ -332,8 +362,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		}
 
 		// Add scroll indicator if needed
-		if (startIndex > 0 || endIndex < this.filteredModels.length) {
-			const scrollInfo = theme.fg("muted", `  (${this.selectedIndex + 1}/${this.filteredModels.length})`);
+		if (startIndex > 0 || endIndex < selectableCount) {
+			const scrollInfo = theme.fg("muted", `  (${this.selectedIndex + 1}/${selectableCount})`);
 			this.listContainer.addChild(new Text(scrollInfo, 0, 0));
 		}
 
@@ -344,12 +374,21 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			for (const line of errorLines) {
 				this.listContainer.addChild(new Text(theme.fg("error", line), 0, 0));
 			}
-		} else if (this.filteredModels.length === 0) {
+		} else if (selectableCount === 0) {
 			this.listContainer.addChild(new Text(theme.fg("muted", "  No matching models"), 0, 0));
 		} else {
-			const selected = this.filteredModels[this.selectedIndex];
+			const selected = this.filteredModels[this.selectedIndex - defaultOffset];
 			this.listContainer.addChild(new Spacer(1));
-			this.listContainer.addChild(new Text(theme.fg("muted", `  Model Name: ${selected.model.name}`), 0, 0));
+			this.listContainer.addChild(
+				new Text(
+					theme.fg(
+						"muted",
+						`  ${selected ? `Model Name: ${selected.model.name}` : "Uses the model active when /plan starts"}`,
+					),
+					0,
+					0,
+				),
+			);
 		}
 		if (this.refreshStatusMessage) {
 			this.listContainer.addChild(new Spacer(1));
@@ -373,19 +412,26 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		}
 		// Up arrow - wrap to bottom when at top
 		if (kb.matches(keyData, "tui.select.up")) {
-			if (this.filteredModels.length === 0) return;
-			this.selectedIndex = this.selectedIndex === 0 ? this.filteredModels.length - 1 : this.selectedIndex - 1;
+			const count = this.filteredModels.length + (this.showDefaultOption ? 1 : 0);
+			if (count === 0) return;
+			this.selectedIndex = this.selectedIndex === 0 ? count - 1 : this.selectedIndex - 1;
 			this.updateList();
 		}
 		// Down arrow - wrap to top when at bottom
 		else if (kb.matches(keyData, "tui.select.down")) {
-			if (this.filteredModels.length === 0) return;
-			this.selectedIndex = this.selectedIndex === this.filteredModels.length - 1 ? 0 : this.selectedIndex + 1;
+			const count = this.filteredModels.length + (this.showDefaultOption ? 1 : 0);
+			if (count === 0) return;
+			this.selectedIndex = this.selectedIndex === count - 1 ? 0 : this.selectedIndex + 1;
 			this.updateList();
 		}
 		// Enter
 		else if (kb.matches(keyData, "tui.select.confirm")) {
-			const selectedModel = this.filteredModels[this.selectedIndex];
+			if (this.showDefaultOption && this.selectedIndex === 0) {
+				this.dispose();
+				this.onSelectDefaultCallback?.();
+				return;
+			}
+			const selectedModel = this.filteredModels[this.selectedIndex - (this.showDefaultOption ? 1 : 0)];
 			if (selectedModel) {
 				this.handleSelect(selectedModel.model);
 			}
@@ -397,7 +443,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		}
 		// Select and save as default
 		else if (kb.matches(keyData, "app.models.save") && this.onSelectAsDefaultCallback) {
-			const selectedModel = this.filteredModels[this.selectedIndex];
+			const selectedModel = this.filteredModels[this.selectedIndex - (this.showDefaultOption ? 1 : 0)];
 			if (selectedModel) {
 				this.dispose();
 				this.onSelectAsDefaultCallback(selectedModel.model);
