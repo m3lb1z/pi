@@ -1,4 +1,6 @@
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { Container, type SettingItem, SettingsList, type TUI } from "@earendil-works/pi-tui";
+import { DEFAULT_THINKING_LEVEL } from "../../../core/defaults.ts";
 import type { ScopedModel } from "../../../core/model-resolver.ts";
 import { getSettingsListTheme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -9,12 +11,15 @@ export type PlanMode = "planner" | "programming";
 export interface PlanModeModelChoice {
 	provider: string;
 	id: string;
+	thinking: ThinkingLevel;
 }
 
 export type PlanModeModels = Partial<Record<PlanMode, PlanModeModelChoice>>;
 
 function displayChoice(choice: PlanModeModelChoice | undefined): string {
-	return choice ? `${choice.id} [${choice.provider}]` : "Default model";
+	return choice
+		? `${choice.id} [${choice.provider}] · ${choice.thinking}`
+		: `Default model · ${DEFAULT_THINKING_LEVEL}`;
 }
 
 export class PlanModeSelectorComponent extends Container {
@@ -63,7 +68,11 @@ export class PlanModeSelectorComponent extends Container {
 					source,
 					availableScopedModels,
 					(model) => {
-						const next = { provider: model.provider, id: model.id };
+						const next = {
+							provider: model.provider,
+							id: model.id,
+							thinking: config[mode]?.thinking ?? DEFAULT_THINKING_LEVEL,
+						};
 						config[mode] = next;
 						onChange(mode, next);
 						done(displayChoice(next));

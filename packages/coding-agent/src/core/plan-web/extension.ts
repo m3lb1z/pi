@@ -1,11 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { CONFIG_DIR_NAME } from "../../config.ts";
 import { PlanModeSelectorComponent } from "../../modes/interactive/components/plan-mode-selector.ts";
 import { stripBom } from "../../utils/text.ts";
+import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "../defaults.ts";
 import type { ExtensionAPI, ExtensionContext } from "../extensions/types.ts";
 import { detectLineEnding, normalizeToLF, restoreLineEndings } from "../tools/edit-diff.ts";
 import { createGrepToolDefinition } from "../tools/grep.ts";
@@ -16,6 +18,7 @@ type Mode = "planner" | "programming";
 interface ModelChoice {
 	provider: string;
 	id: string;
+	thinking: ThinkingLevel;
 }
 type ModeConfig = Partial<Record<Mode, ModelChoice>>;
 const PLAN_DOCUMENT_TOOLS = ["edit_plan", "write_plan"];
@@ -86,7 +89,7 @@ export interface PlanExtensionOptions {
 }
 
 export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions = {}): void {
-	const directory = options.directory ?? join(homedir(), ".pi");
+	const directory = options.directory ?? join(homedir(), ".pi", "agent");
 	const planPath = join(directory, "plan_current.md");
 	const configPath = join(directory, "plan-models.json");
 	let server: PlanServer | undefined;
@@ -112,10 +115,19 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 				const entry: unknown = (raw as Record<string, unknown>)[key];
 				if (entry === undefined) continue;
 				if (!entry || typeof entry !== "object") throw new Error("Invalid plan model configuration.");
-				const { provider, id } = entry as Record<string, unknown>;
+				const { provider, id, thinking: configuredThinking } = entry as Record<string, unknown>;
 				if (typeof provider !== "string" || typeof id !== "string")
 					throw new Error("Invalid plan model configuration.");
-				config[key] = { provider, id };
+				let thinking = DEFAULT_THINKING_LEVEL;
+				if (configuredThinking !== undefined) {
+					if (
+						typeof configuredThinking !== "string" ||
+						!THINKING_LEVEL_OPTIONS.includes(configuredThinking as ThinkingLevel)
+					)
+						throw new Error("Invalid plan model thinking level.");
+					thinking = configuredThinking as ThinkingLevel;
+				}
+				config[key] = { provider, id, thinking };
 			}
 			return config;
 		} catch (error) {
@@ -145,7 +157,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		if (choice && next === "planner" && !model.reasoning)
 			throw new Error("The configured planner model does not support reasoning. Select another with /mode.");
 		if (!(await pi.setModel(model))) throw new Error(`No authentication for ${model.provider}. Use /login first.`);
-		pi.setThinkingLevel(next === "planner" ? "high" : "off");
+		pi.setThinkingLevel(choice?.thinking ?? DEFAULT_THINKING_LEVEL);
 	}
 
 	function activate(next: Mode): void {

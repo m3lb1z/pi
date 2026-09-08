@@ -129,7 +129,10 @@ describe("model selector", () => {
 		selector.handleInput("\r");
 		selector.handleInput("\x1b[B");
 		selector.handleInput("\r");
-		expect(onChange).toHaveBeenLastCalledWith("programming", expect.objectContaining({ id: "reasoner" }));
+		expect(onChange).toHaveBeenLastCalledWith(
+			"programming",
+			expect.objectContaining({ id: "reasoner", thinking: "medium" }),
+		);
 	});
 
 	it("lists every catalog that failed to refresh", async () => {

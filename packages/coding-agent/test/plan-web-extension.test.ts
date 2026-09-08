@@ -31,19 +31,17 @@ afterEach(async () => {
 });
 
 async function setup(
-	options: {
-		configured?: boolean | "planner";
-		defaultModel?: "reasoner" | "fast";
-		projectTrusted?: boolean;
-	} = {},
+	options: { configured?: boolean | "planner"; defaultModel?: "reasoner" | "fast"; projectTrusted?: boolean } = {},
 ) {
 	const directory = mkdtempSync(join(tmpdir(), "pi-plan-extension-"));
 	if (options.configured !== false) {
 		const configDirectory = join(directory, ".pi");
 		mkdirSync(configDirectory, { recursive: true });
 		const config = {
-			planner: { provider: "test", id: "reasoner" },
-			...(options.configured === "planner" ? {} : { programming: { provider: "test", id: "fast" } }),
+			planner: { provider: "test", id: "reasoner", thinking: "medium" },
+			...(options.configured === "planner"
+				? {}
+				: { programming: { provider: "test", id: "fast", thinking: "medium" } }),
 		};
 		writeFileSync(join(configDirectory, "plan-models.json"), JSON.stringify(config));
 	}
@@ -172,29 +170,48 @@ describe("plan web extension", () => {
 		const test = await setup({ configured: false });
 		await test.plan();
 		expect(test.setModel).toHaveBeenLastCalledWith(expect.objectContaining({ id: "reasoner" }));
+		expect(test.setThinkingLevel).toHaveBeenLastCalledWith("medium");
 		await test.action();
 		expect(test.setModel).toHaveBeenLastCalledWith(expect.objectContaining({ id: "reasoner" }));
+		expect(test.setThinkingLevel).toHaveBeenLastCalledWith("medium");
 	});
 
 	it("uses the session default only for the mode without configuration", async () => {
 		const test = await setup({ configured: "planner", defaultModel: "fast" });
 		await test.plan();
 		expect(test.setModel).toHaveBeenLastCalledWith(expect.objectContaining({ id: "reasoner" }));
+		expect(test.setThinkingLevel).toHaveBeenLastCalledWith("medium");
 		await test.action();
 		expect(test.setModel).toHaveBeenLastCalledWith(expect.objectContaining({ id: "fast" }));
+		expect(test.setThinkingLevel).toHaveBeenLastCalledWith("medium");
+	});
+
+	it("uses the configured thinking level for each mode", async () => {
+		const test = await setup({ configured: false });
+		writeFileSync(
+			join(test.directory, ".pi/plan-models.json"),
+			JSON.stringify({
+				planner: { provider: "test", id: "reasoner", thinking: "high" },
+				programming: { provider: "test", id: "fast", thinking: "off" },
+			}),
+		);
+		await test.plan();
+		expect(test.setThinkingLevel).toHaveBeenLastCalledWith("high");
+		await test.action();
+		expect(test.setThinkingLevel).toHaveBeenLastCalledWith("off");
 	});
 
 	it("switches to the fast model and restores normal Pi tools after browser approval", async () => {
 		const test = await setup();
 		await test.plan();
 		expect(test.setModel).toHaveBeenLastCalledWith(expect.objectContaining({ id: "reasoner" }));
-		expect(test.setThinkingLevel).toHaveBeenLastCalledWith("high");
+		expect(test.setThinkingLevel).toHaveBeenLastCalledWith("medium");
 		expect(test.activeTools()).toContain("write_plan");
 		expect(test.activeTools()).not.toContain("bash");
 		expect((await test.state()).status).toBe("review");
 		expect((await test.action()).status).toBe(200);
 		expect(test.setModel).toHaveBeenLastCalledWith(expect.objectContaining({ id: "fast" }));
-		expect(test.setThinkingLevel).toHaveBeenLastCalledWith("off");
+		expect(test.setThinkingLevel).toHaveBeenLastCalledWith("medium");
 		expect(test.activeTools()).toEqual(["read", "bash", "edit", "write", "custom_tool"]);
 		expect(test.sendUserMessage).toHaveBeenLastCalledWith(expect.stringContaining("Implement the approved plan"), {
 			deliverAs: "followUp",
