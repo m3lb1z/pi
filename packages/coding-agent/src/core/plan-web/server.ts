@@ -29,6 +29,7 @@ export interface PlanAction {
 }
 
 const MAX_PLAN_BYTES = 1024 * 1024;
+const MAX_ACTION_BYTES = MAX_PLAN_BYTES + 64 * 1024;
 
 /** One listening process owns the global plan. Approval always rechecks the disk revision. */
 export class PlanServer {
@@ -154,7 +155,7 @@ export class PlanServer {
 		response.setHeader("Referrer-Policy", "no-referrer");
 		response.setHeader(
 			"Content-Security-Policy",
-			"default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+			"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
 		);
 		const url = new URL(request.url ?? "/", `http://${hosts[0]}`);
 		if (request.method === "GET" && url.pathname === "/") {
@@ -164,6 +165,11 @@ export class PlanServer {
 		if (request.method === "GET" && url.pathname === "/app.js") {
 			const script = readFileSync(join(getPlanWebAssetsDir(), "app.js"), "utf8");
 			response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" }).end(script);
+			return;
+		}
+		if (request.method === "GET" && url.pathname === "/style.css") {
+			const stylesheet = readFileSync(join(getPlanWebAssetsDir(), "..", "style.css"), "utf8");
+			response.writeHead(200, { "Content-Type": "text/css; charset=utf-8" }).end(stylesheet);
 			return;
 		}
 		const token = request.headers["x-plan-token"] ?? url.searchParams.get("token");
@@ -192,7 +198,7 @@ export class PlanServer {
 		let body = "";
 		for await (const chunk of request) {
 			body += chunk.toString();
-			if (Buffer.byteLength(body) > 16384) throw new Error("Request too large.");
+			if (Buffer.byteLength(body) > MAX_ACTION_BYTES) throw new Error("Request too large.");
 		}
 		const value: unknown = JSON.parse(body);
 		if (!value || typeof value !== "object") throw new Error("Invalid action.");

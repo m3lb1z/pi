@@ -34,7 +34,6 @@ async function setup(
 	options: {
 		configured?: boolean | "planner";
 		defaultModel?: "reasoner" | "fast";
-		openBrowser?: boolean;
 		projectTrusted?: boolean;
 	} = {},
 ) {
@@ -68,7 +67,6 @@ async function setup(
 	});
 	const setModel = vi.fn(async (_model: Model<Api>) => true);
 	const setThinkingLevel = vi.fn();
-	const exec = vi.fn(async () => ({ code: 0, stdout: "", stderr: "" }));
 	const ctx = {
 		cwd: directory,
 		mode: "tui",
@@ -104,9 +102,8 @@ async function setup(
 		setModel,
 		setThinkingLevel,
 		sendUserMessage,
-		exec,
 	} as unknown as ExtensionAPI;
-	registerPlanWeb(api, { directory: join(directory, ".pi"), port: 0, openBrowser: options.openBrowser ?? false });
+	registerPlanWeb(api, { directory: join(directory, ".pi"), port: 0 });
 	const emit = async (name: string, event: unknown = {}) => events.get(name)?.(event, ctx);
 	cleanup.push(async () => {
 		await emit("session_shutdown");
@@ -160,7 +157,6 @@ async function setup(
 		setModel,
 		setThinkingLevel,
 		sendUserMessage,
-		exec,
 		activeTools: () => activeTools,
 	};
 }
@@ -169,19 +165,6 @@ describe("plan web extension", () => {
 	it("is registered as a bundled internal extension", () => {
 		expect(builtInExtensions).toContainEqual(
 			expect.objectContaining({ name: "plan-web", factory: expect.any(Function), hidden: true }),
-		);
-	});
-
-	it("opens the authenticated plan URL when plan mode starts", async () => {
-		const test = await setup({ openBrowser: true });
-		await test.command("plan");
-		const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32" : "xdg-open";
-		expect(test.exec).toHaveBeenCalledWith(
-			opener,
-			expect.arrayContaining([expect.stringMatching(/^http:\/\/localhost:\d+\/#.+/)]),
-			{
-				timeout: 5000,
-			},
 		);
 	});
 

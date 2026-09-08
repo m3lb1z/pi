@@ -83,7 +83,6 @@ function applyPlanDiff(content: string, input: string, planPath: string): { cont
 export interface PlanExtensionOptions {
 	directory?: string;
 	port?: number;
-	openBrowser?: boolean;
 }
 
 export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions = {}): void {
@@ -307,17 +306,6 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 					}
 				}
 				ctx.ui.notify(`Plan: ${server.url}`);
-				if (options.openBrowser !== false) {
-					const command =
-						process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32" : "xdg-open";
-					const browserArgs =
-						process.platform === "win32" ? ["url.dll,FileProtocolHandler", server.url] : [server.url];
-					try {
-						await pi.exec(command, browserArgs, { timeout: 5000 });
-					} catch {
-						/* The terminal link remains usable on headless hosts. */
-					}
-				}
 			} catch (error) {
 				if (created && server === created) await cleanup();
 				ctx.ui.notify(String(error), "error");

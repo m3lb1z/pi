@@ -2,11 +2,14 @@ import hljs from "highlight.js";
 import {
 	Check,
 	Code2,
-	FilePlus2,
+	Copy,
+	Highlighter,
 	Maximize2,
 	MessageSquareText,
 	Minimize2,
+	Plus,
 	RotateCcw,
+	Send,
 	Trash2,
 	Workflow,
 	X,
@@ -17,6 +20,7 @@ import { marked } from "marked";
 import mermaid from "mermaid";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { formatAnnotationFeedback } from "./annotation-feedback.ts";
 
 const labels = {
 	draft: "Borrador",
@@ -67,7 +71,7 @@ marked.use({
 			const href = sanitizeMarkdownUrl(linkToken.href);
 			if (href === null) return this.parser.parseInline(linkToken.tokens);
 			const title = linkToken.title ? ` title="${escapeHtml(linkToken.title)}"` : "";
-				return `<a href="${escapeHtml(href)}"${title} target="_blank" rel="noopener noreferrer">${this.parser.parseInline(linkToken.tokens)}</a>`;
+			return `<a href="${escapeHtml(href)}"${title} target="_blank" rel="noopener noreferrer">${this.parser.parseInline(linkToken.tokens)}</a>`;
 		},
 		image(imageToken) {
 			const href = sanitizeMarkdownUrl(imageToken.href);
@@ -103,12 +107,69 @@ mermaid.initialize({
 
 let diagramSequence = 0;
 
-function IconButton({ active = false, label, onClick, children }) {
+function acceptedTextNodes(container) {
+	const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+		acceptNode(node) {
+			return node.parentElement?.closest("[data-annotation-ignore]")
+				? NodeFilter.FILTER_REJECT
+				: NodeFilter.FILTER_ACCEPT;
+		},
+	});
+	const nodes = [];
+	while (walker.nextNode()) nodes.push(walker.currentNode);
+	return nodes;
+}
+
+function selectionOffsets(container, range) {
+	const nodes = acceptedTextNodes(container);
+	let cursor = 0;
+	let start;
+	let end;
+	for (const node of nodes) {
+		if (node === range.startContainer) start = cursor + range.startOffset;
+		if (node === range.endContainer) end = cursor + range.endOffset;
+		cursor += node.textContent.length;
+	}
+	return start === undefined || end === undefined ? null : { start, end };
+}
+
+function rangeFromOffsets(container, start, end) {
+	const range = document.createRange();
+	let cursor = 0;
+	let hasStart = false;
+	for (const node of acceptedTextNodes(container)) {
+		const next = cursor + node.textContent.length;
+		if (!hasStart && start >= cursor && start <= next) {
+			range.setStart(node, Math.min(start - cursor, node.textContent.length));
+			hasStart = true;
+		}
+		if (hasStart && end >= cursor && end <= next) {
+			range.setEnd(node, Math.min(end - cursor, node.textContent.length));
+			return range;
+		}
+		cursor = next;
+	}
+	return null;
+}
+
+function sourceLineForSelection(content, text) {
+	const exactIndex = content.indexOf(text);
+	const firstLine = text
+		.split("\n")
+		.map((line) => line.trim())
+		.find(Boolean);
+	const fallbackIndex = firstLine ? content.indexOf(firstLine) : -1;
+	const index = exactIndex >= 0 ? exactIndex : fallbackIndex;
+	return index < 0 ? 1 : content.slice(0, index).split("\n").length;
+}
+
+function IconButton({ active = false, disabled = false, label, onClick, children }) {
 	return (
 		<button
 			type="button"
 			className={`icon-button${active ? " active" : ""}`}
 			aria-label={label}
+			disabled={disabled}
 			title={label}
 			onClick={onClick}
 		>
@@ -238,17 +299,24 @@ function MermaidBlock({ source }) {
 	);
 }
 
-function Markdown({ content }) {
+function Markdown({ annotations, content, onSelection, selection }) {
 	const container = useRef(null);
 	const html = useMemo(() => marked.parse(content), [content]);
 
 	useEffect(() => {
 		if (!container.current) return undefined;
+		container.current.innerHTML = html;
 		const roots = [];
 		for (const code of container.current.querySelectorAll("pre > code")) {
 			if (code.classList.contains("language-mermaid")) {
+				const wrapper = document.createElement("div");
+				const offsetText = document.createElement("span");
 				const host = document.createElement("div");
-				code.parentElement.replaceWith(host);
+				offsetText.className = "annotation-offset-text";
+				offsetText.textContent = code.textContent || "";
+				host.dataset.annotationIgnore = "";
+				wrapper.append(offsetText, host);
+				code.parentElement.replaceWith(wrapper);
 				const root = createRoot(host);
 				root.render(<MermaidBlock source={code.textContent || ""} />);
 				roots.push(root);
@@ -256,12 +324,112 @@ function Markdown({ content }) {
 			}
 			hljs.highlightElement(code);
 		}
+		if (globalThis.CSS?.highlights && globalThis.Highlight) {
+			const commentRanges = annotations
+				.filter((annotation) => annotation.type === "comment")
+				.map((annotation) => rangeFromOffsets(container.current, annotation.start, annotation.end))
+				.filter(Boolean);
+			const deletionRanges = annotations
+				.filter((annotation) => annotation.type === "deletion")
+				.map((annotation) => rangeFromOffsets(container.current, annotation.start, annotation.end))
+				.filter(Boolean);
+			CSS.highlights.set("plan-comment", new Highlight(...commentRanges));
+			CSS.highlights.set("plan-deletion", new Highlight(...deletionRanges));
+			const selectionRange = selection
+				? rangeFromOffsets(container.current, selection.start, selection.end)
+				: null;
+			CSS.highlights.set("plan-selection", new Highlight(...(selectionRange ? [selectionRange] : [])));
+		}
 		return () => {
+			globalThis.CSS?.highlights?.delete("plan-comment");
+			globalThis.CSS?.highlights?.delete("plan-deletion");
+			globalThis.CSS?.highlights?.delete("plan-selection");
 			for (const root of roots) root.unmount();
 		};
-	}, [html]);
+	}, [annotations, html, selection]);
 
-	return <div ref={container} className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
+	const captureSelection = () => {
+		const selection = window.getSelection();
+		if (!selection || selection.isCollapsed || selection.rangeCount === 0 || !container.current) return;
+		const range = selection.getRangeAt(0);
+		if (!container.current.contains(range.commonAncestorContainer)) return;
+		const offsets = selectionOffsets(container.current, range);
+		const rawText = selection.toString();
+		const text = rawText.trim();
+		if (!offsets || !text) return;
+		const leadingWhitespace = rawText.length - rawText.trimStart().length;
+		onSelection({
+			start: offsets.start + leadingWhitespace,
+			end: offsets.end - (rawText.length - rawText.trimEnd().length),
+			text,
+			line: sourceLineForSelection(content, text),
+		});
+	};
+
+	return (
+		<div
+			ref={container}
+			className="markdown"
+			onMouseUp={captureSelection}
+			onKeyUp={captureSelection}
+			dangerouslySetInnerHTML={{ __html: html }}
+		/>
+	);
+}
+
+function SelectionToolbar({ selection, onCancel, onComment, onDelete }) {
+	const [position, setPosition] = useState(null);
+
+	useEffect(() => {
+		let frame;
+		const updatePosition = () => {
+			cancelAnimationFrame(frame);
+			frame = requestAnimationFrame(() => {
+				const container = document.querySelector(".markdown");
+				const range = container ? rangeFromOffsets(container, selection.start, selection.end) : null;
+				if (!range) return;
+				const rect = range.getBoundingClientRect();
+				if (rect.bottom < 58 || rect.top > innerHeight) {
+					setPosition(null);
+					return;
+				}
+				setPosition({
+					left: Math.max(94, Math.min(innerWidth - 94, rect.left + rect.width / 2)),
+					top: rect.top > 68 ? rect.top - 10 : rect.bottom + 10,
+					below: rect.top <= 68,
+				});
+			});
+		};
+		updatePosition();
+		addEventListener("resize", updatePosition);
+		addEventListener("scroll", updatePosition, true);
+		return () => {
+			cancelAnimationFrame(frame);
+			removeEventListener("resize", updatePosition);
+			removeEventListener("scroll", updatePosition, true);
+		};
+	}, [selection]);
+
+	if (!position) return null;
+	return (
+		<div
+			className={`selection-toolbar${position.below ? " below" : ""}`}
+			style={{ left: position.left, top: position.top }}
+			role="toolbar"
+			aria-label="Acciones para la selección"
+		>
+			<IconButton label="Comentar selección" onClick={onComment}>
+				<MessageSquareText />
+			</IconButton>
+			<IconButton label="Eliminar selección" onClick={onDelete}>
+				<Trash2 />
+			</IconButton>
+			<span className="selection-toolbar-divider" />
+			<IconButton label="Cancelar selección" onClick={onCancel}>
+				<X />
+			</IconButton>
+		</div>
+	);
 }
 
 function ActionButton({ className = "", disabled, icon: Icon, label, onClick }) {
@@ -273,13 +441,8 @@ function ActionButton({ className = "", disabled, icon: Icon, label, onClick }) 
 	);
 }
 
-function TextModal({ kind, onCancel, onSubmit }) {
+function GlobalAnnotationModal({ onCancel, onSubmit }) {
 	const [value, setValue] = useState("");
-	const revise = kind === "revise";
-	const title = revise ? "Solicitar cambios" : "Crear un nuevo plan";
-	const description = revise
-		? "Describe qué debe corregir o ampliar el planner."
-		: "Describe la tarea que debe reemplazar al plan actual.";
 
 	return (
 		<div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
@@ -287,15 +450,20 @@ function TextModal({ kind, onCancel, onSubmit }) {
 				className="modal"
 				role="dialog"
 				aria-modal="true"
-				aria-label={title}
+				aria-label="Agregar cambio general"
 				onSubmit={(event) => {
 					event.preventDefault();
 					if (value.trim()) onSubmit(value.trim());
 				}}
 			>
-				<h2>{title}</h2>
-				<p>{description}</p>
-				<textarea autoFocus value={value} onChange={(event) => setValue(event.target.value)} />
+				<h2>Cambio general</h2>
+				<p>Describe un cambio que aplica al plan completo.</p>
+				<textarea
+					autoFocus
+					placeholder="Describe el cambio requerido…"
+					value={value}
+					onChange={(event) => setValue(event.target.value)}
+				/>
 				<div className="modal-actions">
 					<button type="button" className="button" onClick={onCancel}>
 						<X aria-hidden="true" />
@@ -303,11 +471,147 @@ function TextModal({ kind, onCancel, onSubmit }) {
 					</button>
 					<button type="submit" className="button primary" disabled={!value.trim()}>
 						<Check aria-hidden="true" />
-						Enviar
+						Agregar
 					</button>
 				</div>
 			</form>
 		</div>
+	);
+}
+
+function CommentModal({ selection, onCancel, onSubmit }) {
+	const [comment, setComment] = useState("");
+	return (
+		<div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
+			<form
+				className="modal"
+				role="dialog"
+				aria-modal="true"
+				aria-label="Agregar comentario"
+				onSubmit={(event) => {
+					event.preventDefault();
+					if (comment.trim()) onSubmit(comment.trim());
+				}}
+			>
+				<h2>Agregar comentario</h2>
+				<blockquote className="selection-preview">{selection.text}</blockquote>
+				<textarea
+					autoFocus
+					placeholder="Describe el cambio requerido…"
+					value={comment}
+					onChange={(event) => setComment(event.target.value)}
+				/>
+				<div className="modal-actions">
+					<button type="button" className="button" onClick={onCancel}>
+						<X aria-hidden="true" />
+						Cancelar
+					</button>
+					<button type="submit" className="button primary" disabled={!comment.trim()}>
+						<MessageSquareText aria-hidden="true" />
+						Agregar
+					</button>
+				</div>
+			</form>
+		</div>
+	);
+}
+
+function ConfirmDialog({ busy, description, onCancel, onConfirm, title }) {
+	return (
+		<div
+			className="modal-backdrop"
+			role="presentation"
+			onKeyDown={(event) => event.key === "Escape" && onCancel()}
+			onMouseDown={(event) => event.target === event.currentTarget && onCancel()}
+		>
+			<section
+				className="modal confirm-dialog"
+				role="alertdialog"
+				aria-describedby="confirm-dialog-description"
+				aria-labelledby="confirm-dialog-title"
+			>
+				<div className="confirm-dialog-icon" aria-hidden="true">
+					<Trash2 />
+				</div>
+				<h2 id="confirm-dialog-title">{title}</h2>
+				<p id="confirm-dialog-description">{description}</p>
+				<div className="modal-actions">
+					<button type="button" className="button" disabled={busy} autoFocus onClick={onCancel}>
+						<X aria-hidden="true" />
+						Cancelar
+					</button>
+					<button type="button" className="button destructive" disabled={busy} onClick={onConfirm}>
+						<Trash2 aria-hidden="true" />
+						Descartar
+					</button>
+				</div>
+			</section>
+		</div>
+	);
+}
+
+function AnnotationSidebar({ annotations, busy, canSubmit, copied, onAddGlobal, onCopy, onRemove, onSelect, onSubmit, activity }) {
+	return (
+		<aside className="annotation-sidebar">
+			<div className="annotation-header">
+				<h2>
+					Anotaciones <span className="annotation-count">{annotations.length}</span>
+				</h2>
+				<IconButton disabled={!canSubmit || busy} label="Agregar cambio general" onClick={onAddGlobal}>
+					<Plus />
+				</IconButton>
+			</div>
+			<div className="annotation-list">
+				{annotations.length === 0 ? (
+					<div className="annotation-empty">
+						<Highlighter aria-hidden="true" />
+						<p>Selecciona texto o agrega un cambio general.</p>
+					</div>
+				) : (
+					annotations.map((annotation, index) => (
+						<article key={annotation.id} className={`annotation-item ${annotation.type}`}>
+							<div className="annotation-item-header">
+								{annotation.type === "global" ? (
+									<span className="annotation-link">
+										<MessageSquareText aria-hidden="true" />
+										Cambio general
+									</span>
+								) : (
+									<button type="button" className="annotation-link" onClick={() => onSelect(annotation)}>
+										<Highlighter aria-hidden="true" />
+										{annotation.type === "comment" ? "Comentario" : "Eliminación"} · línea {annotation.line}
+									</button>
+								)}
+								<IconButton label={`Eliminar anotación ${index + 1}`} onClick={() => onRemove(annotation.id)}>
+									<X />
+								</IconButton>
+							</div>
+							{annotation.type !== "global" && <blockquote>{annotation.text}</blockquote>}
+							{annotation.type !== "deletion" && <p>{annotation.comment}</p>}
+						</article>
+					))
+				)}
+			</div>
+			<details className="activity-details">
+				<summary>Actividad del agente</summary>
+				<pre className="activity">{activity}</pre>
+			</details>
+			<div className="annotation-actions">
+				<button type="button" className="button" disabled={annotations.length === 0} onClick={onCopy}>
+					<Copy aria-hidden="true" />
+					{copied ? "Copiado" : "Copiar"}
+				</button>
+				<button
+					type="button"
+					className="button primary"
+					disabled={annotations.length === 0 || !canSubmit || busy}
+					onClick={onSubmit}
+				>
+					<Send aria-hidden="true" />
+					Refinar
+				</button>
+			</div>
+		</aside>
 	);
 }
 
@@ -316,7 +620,13 @@ function App() {
 	const [connected, setConnected] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
-	const [modal, setModal] = useState(null);
+	const [showDiscardConfirmation, setShowDiscardConfirmation] = useState(false);
+	const [showGlobalAnnotation, setShowGlobalAnnotation] = useState(false);
+	const [annotations, setAnnotations] = useState([]);
+	const [pendingSelection, setPendingSelection] = useState(null);
+	const [commentSelection, setCommentSelection] = useState(null);
+	const [copied, setCopied] = useState(false);
+	const revision = state?.revision;
 
 	useEffect(() => {
 		const events = new EventSource(`/events?token=${encodeURIComponent(token)}`);
@@ -335,6 +645,14 @@ function App() {
 		return () => events.close();
 	}, []);
 
+	useEffect(() => {
+		setAnnotations([]);
+		setPendingSelection(null);
+		setCommentSelection(null);
+		setShowDiscardConfirmation(false);
+		setShowGlobalAnnotation(false);
+	}, [revision]);
+
 	const action = async (actionName, feedback = "") => {
 		if (!state || busy) return;
 		setBusy(true);
@@ -347,8 +665,10 @@ function App() {
 			});
 			const result = await response.json();
 			if (!response.ok) throw new Error(result.error);
+			return true;
 		} catch (actionError) {
 			setError(actionError instanceof Error ? actionError.message : String(actionError));
+			return false;
 		} finally {
 			setBusy(false);
 		}
@@ -357,52 +677,64 @@ function App() {
 	const idle = state && ["review", "draft", "blocked", "failed", "completed"].includes(state.status);
 	const hasPlan = Boolean(state?.content.trim());
 	const activity = state?.result || state?.activity || "Sin actividad todavía.";
+	const clearNativeSelection = () => window.getSelection()?.removeAllRanges();
+	const addAnnotation = (selection, type, comment = "") => {
+		setAnnotations((current) => [
+			...current,
+			{ ...selection, id: crypto.randomUUID(), type, comment },
+		]);
+		setPendingSelection(null);
+		setCommentSelection(null);
+		clearNativeSelection();
+	};
+	const focusAnnotation = (annotation) => {
+		if (annotation.type === "global") return;
+		const container = document.querySelector(".markdown");
+		if (!container) return;
+		const range = rangeFromOffsets(container, annotation.start, annotation.end);
+		const target = range?.startContainer.parentElement;
+		target?.scrollIntoView({ behavior: "smooth", block: "center" });
+	};
+	const copyAnnotations = async () => {
+		try {
+			await navigator.clipboard.writeText(formatAnnotationFeedback(annotations));
+			setCopied(true);
+			setTimeout(() => setCopied(false), 1600);
+		} catch (copyError) {
+			setError(copyError instanceof Error ? copyError.message : "No se pudieron copiar las anotaciones.");
+		}
+	};
+	const submitAnnotations = async () => {
+		if (await action("revise", formatAnnotationFeedback(annotations))) setAnnotations([]);
+	};
 
 	return (
 		<div className="app-shell">
-			<header className="topbar">
-				<div>
-					<p className="eyebrow">Pi planning</p>
-					<h1>Plan actual</h1>
-					<p className="project">{state?.project || "Esperando información del proyecto…"}</p>
-				</div>
+			<header className="navbar">
+				<h1>Pi Planning</h1>
+				<nav className="navbar-actions" aria-label="Acciones del plan">
+					<ActionButton
+						className="primary"
+						disabled={busy || !connected || state?.status !== "review"}
+						icon={Check}
+						label="Aprobar"
+						onClick={() => action("approve")}
+					/>
+					<ActionButton
+						className="danger"
+						disabled={busy || !connected || !idle || !hasPlan}
+						icon={Trash2}
+						label="Descartar"
+						onClick={() => setShowDiscardConfirmation(true)}
+					/>
+				</nav>
 				<div className="status-group">
 					<span className="status" data-connected={connected}>
 						<span className="status-dot" />
 						{connected && state ? labels[state.status] : "Desconectado"}
 					</span>
-					{state && <span className="revision">v{state.revision.slice(0, 7)}</span>}
 				</div>
 			</header>
-
-			<nav className="toolbar" aria-label="Acciones del plan">
-				<ActionButton
-					className="primary"
-					disabled={busy || !connected || state?.status !== "review"}
-					icon={Check}
-					label="Aprobar y ejecutar"
-					onClick={() => action("approve")}
-				/>
-				<ActionButton
-					disabled={busy || !connected || !idle || !hasPlan}
-					icon={MessageSquareText}
-					label="Solicitar cambios"
-					onClick={() => setModal("revise")}
-				/>
-				<ActionButton
-					disabled={busy || !connected || !idle}
-					icon={FilePlus2}
-					label="Crear nuevo plan"
-					onClick={() => setModal("new")}
-				/>
-				<ActionButton
-					className="danger"
-					disabled={busy || !connected || !idle || !hasPlan}
-					icon={Trash2}
-					label="Descartar"
-					onClick={() => confirm("¿Descartar el plan actual?") && action("discard")}
-				/>
-			</nav>
 
 			{error && (
 				<p className="error" role="alert">
@@ -410,32 +742,76 @@ function App() {
 				</p>
 			)}
 
-			<main className="layout">
-				<section className="card">
-					<div className="card-header">
-						<h2>Contenido del plan</h2>
-					</div>
-					<div className="card-body">
-						{hasPlan ? <Markdown content={state.content} /> : <p className="empty">Esperando el plan…</p>}
+			<main className="review-layout">
+				<section className="plan-surface">
+					<div className="plan-content">
+						{hasPlan ? (
+							<Markdown
+								annotations={annotations}
+								content={state.content}
+								onSelection={idle && !busy ? setPendingSelection : () => {}}
+								selection={pendingSelection}
+							/>
+						) : (
+							<p className="empty">Esperando el plan…</p>
+						)}
 					</div>
 				</section>
-				<aside className="card activity-card">
-					<div className="card-header">
-						<h2>Actividad y resultado</h2>
-					</div>
-					<div className="card-body">
-						<pre className="activity">{activity}</pre>
-					</div>
-				</aside>
+				<AnnotationSidebar
+					annotations={annotations}
+					activity={activity}
+					busy={busy}
+					canSubmit={Boolean(connected && idle)}
+					copied={copied}
+					onAddGlobal={() => setShowGlobalAnnotation(true)}
+					onCopy={copyAnnotations}
+					onRemove={(id) => setAnnotations((current) => current.filter((annotation) => annotation.id !== id))}
+					onSelect={focusAnnotation}
+					onSubmit={submitAnnotations}
+				/>
 			</main>
+			{pendingSelection && idle && !busy && (
+				<SelectionToolbar
+					selection={pendingSelection}
+					onCancel={() => {
+						setPendingSelection(null);
+						clearNativeSelection();
+					}}
+					onComment={() => {
+						setCommentSelection(pendingSelection);
+						setPendingSelection(null);
+					}}
+					onDelete={() => addAnnotation(pendingSelection, "deletion")}
+				/>
+			)}
 
-			{modal && (
-				<TextModal
-					kind={modal}
-					onCancel={() => setModal(null)}
-					onSubmit={(feedback) => {
-						setModal(null);
-						action(modal, feedback);
+			{showGlobalAnnotation && (
+				<GlobalAnnotationModal
+					onCancel={() => setShowGlobalAnnotation(false)}
+					onSubmit={(comment) => {
+						setAnnotations((current) => [
+							...current,
+							{ id: crypto.randomUUID(), type: "global", comment },
+						]);
+						setShowGlobalAnnotation(false);
+					}}
+				/>
+			)}
+			{commentSelection && (
+				<CommentModal
+					selection={commentSelection}
+					onCancel={() => setCommentSelection(null)}
+					onSubmit={(comment) => addAnnotation(commentSelection, "comment", comment)}
+				/>
+			)}
+			{showDiscardConfirmation && (
+				<ConfirmDialog
+					busy={busy}
+					title="Descartar plan"
+					description="El contenido del plan actual se eliminará. Esta acción no se puede deshacer."
+					onCancel={() => setShowDiscardConfirmation(false)}
+					onConfirm={async () => {
+						if (await action("discard")) setShowDiscardConfirmation(false);
 					}}
 				/>
 			)}

@@ -21,3 +21,6 @@
 *.gz binary
 *.woff binary
 *.woff2 binary
+
+# Mermaid's generated bundle contains significant whitespace inside template literals.
+packages/coding-agent/src/core/plan-web/vendor/app.js whitespace=-trailing-space

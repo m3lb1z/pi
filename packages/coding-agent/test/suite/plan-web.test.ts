@@ -13,7 +13,7 @@ it("runs planning and focused document edits through the real session with the f
 			{ id: "planner", reasoning: true },
 			{ id: "programmer", reasoning: false },
 		],
-		extensionFactories: [(pi) => registerPlanWeb(pi, { directory, port: 0, openBrowser: false })],
+		extensionFactories: [(pi) => registerPlanWeb(pi, { directory, port: 0 })],
 	});
 	try {
 		await harness.session.bindExtensions({ shutdownHandler: () => {} });
