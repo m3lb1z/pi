@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { getPlanWebAssetsDir } from "../../config.ts";
 import { planPage } from "./page.ts";
 
 export type PlanStatus =
@@ -153,11 +154,16 @@ export class PlanServer {
 		response.setHeader("Referrer-Policy", "no-referrer");
 		response.setHeader(
 			"Content-Security-Policy",
-			"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+			"default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
 		);
 		const url = new URL(request.url ?? "/", `http://${hosts[0]}`);
 		if (request.method === "GET" && url.pathname === "/") {
 			response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(planPage);
+			return;
+		}
+		if (request.method === "GET" && url.pathname === "/app.js") {
+			const script = readFileSync(join(getPlanWebAssetsDir(), "app.js"), "utf8");
+			response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" }).end(script);
 			return;
 		}
 		const token = request.headers["x-plan-token"] ?? url.searchParams.get("token");

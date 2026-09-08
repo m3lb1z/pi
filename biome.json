@@ -23,6 +23,16 @@
 		"indentWidth": 3,
 		"lineWidth": 120
 	},
+	"overrides": [
+		{
+			"includes": ["packages/coding-agent/src/**/*.ts"],
+			"linter": {
+				"domains": {
+					"react": "none"
+				}
+			}
+		}
+	],
 	"files": {
 		"includes": [
 			"packages/*/src/**/*.ts",

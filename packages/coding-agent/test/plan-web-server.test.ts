@@ -35,11 +35,18 @@ describe("plan web server", () => {
 	it("serves the page without exposing plan contents or the approval token", async () => {
 		const { server, base } = await setup();
 		server.write("private task");
-		const page = await fetch(base).then((response) => response.text());
-		expect(page).toContain("Aprobar y ejecutar");
-		expect(page).toContain("Crear nuevo plan");
-		expect(page).toContain("Descartar plan actual");
-		expect(page).toContain('role="toolbar"');
+		const pageResponse = await fetch(base);
+		const page = await pageResponse.text();
+		const appResponse = await fetch(`${base}/app.js`);
+		const app = await appResponse.text();
+		expect(page).toContain('<div id="root"></div>');
+		expect(page).toContain('<script src="/app.js"></script>');
+		expect(pageResponse.headers.get("content-security-policy")).toContain("script-src 'self'");
+		expect(appResponse.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+		expect(app).toContain("Aprobar y ejecutar");
+		expect(app).toContain("Crear nuevo plan");
+		expect(app).toContain("Descartar");
+		expect(app).toContain("language-mermaid");
 		expect(page).not.toContain("<textarea");
 		expect(page).not.toContain("private task");
 		expect(page).not.toContain(server.token);

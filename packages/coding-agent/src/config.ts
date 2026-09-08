@@ -431,6 +431,16 @@ export function getExportTemplateDir(): string {
 	return join(packageDir, srcOrDist, "core", "export-html");
 }
 
+/** Get the directory containing the bundled plan viewer browser assets. */
+export function getPlanWebAssetsDir(): string {
+	if (isBunBinary) {
+		return join(getPackageDir(), "plan-web", "vendor");
+	}
+	const packageDir = getPackageDir();
+	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
+	return join(packageDir, srcOrDist, "core", "plan-web", "vendor");
+}
+
 /** Get path to package.json */
 export function getPackageJsonPath(): string {
 	return join(getPackageDir(), "package.json");

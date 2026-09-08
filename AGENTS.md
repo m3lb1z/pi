@@ -28,14 +28,9 @@
 
 ## Commands
 
-- After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.
+- Omit all verification tests during code review; only analyze and check for syntax problems or errors.
 - Never run `npm run build` or `npm test` unless requested by the user.
-- Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For all non-e2e tests, run `./test.sh` from the repo root. Otherwise run specific tests from the package root:
-  - Vitest: `node "$(git rev-parse --show-toplevel)/node_modules/vitest/dist/cli.js" --run test/specific.test.ts`
-  - `packages/tui` (`node:test`): `node --test test/specific.test.ts`
-- If you create or modify a test file, run it and iterate on test or implementation until it passes.
-- For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
-- When regressions tests for fixing a github issue, add a comment with the github issue number next to the test.
+- Do not run test suites (vitest, node:test, test.sh) during code reviews or changes unless explicitly asked by the user.
 - For ad-hoc scripts, `write` them to a temp file (e.g. `/tmp`), run, edit if needed, remove when done. Don't embed multi-line scripts in `bash` commands.
 - Never commit unless the user asks.
 
