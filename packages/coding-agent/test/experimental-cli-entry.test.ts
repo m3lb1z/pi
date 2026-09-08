@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { VERSION } from "../src/config.ts";
 
 const sourceResolverPath = resolve(__dirname, "../src/experimental/source-resolver.ts");
+const cliVersion = `${VERSION}-pilot`;
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -47,7 +48,7 @@ describe("stable and development CLI entrypoints", () => {
 	it("does not dispatch experimental commands from the stable entrypoint", () => {
 		const result = runEntry("cli.ts", true);
 		expect(result.status, result.stderr).toBe(0);
-		expect(result.stdout.trim()).toBe(VERSION);
+		expect(result.stdout.trim()).toBe(cliVersion);
 	});
 
 	it("keeps experimental dispatch in the development entrypoint", () => {
@@ -60,6 +61,6 @@ describe("stable and development CLI entrypoints", () => {
 	it("falls back to the stable CLI when experiments are disabled", () => {
 		const result = runEntry("experimental/cli.ts", false);
 		expect(result.status, result.stderr).toBe(0);
-		expect(result.stdout.trim()).toBe(VERSION);
+		expect(result.stdout.trim()).toBe(cliVersion);
 	});
 });

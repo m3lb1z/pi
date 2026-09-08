@@ -613,7 +613,7 @@ export async function main(args: string[], options?: MainOptions) {
 	time("parseArgs");
 
 	if (parsed.version) {
-		console.log(VERSION);
+		console.log(`${VERSION}-pilot`);
 		process.exit(0);
 	}
 

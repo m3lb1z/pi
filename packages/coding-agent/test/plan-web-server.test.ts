@@ -167,7 +167,7 @@ describe("plan web server", () => {
 		await server.close();
 		const other = new PlanServer(path, "/different/project", async () => {});
 		servers.push(other);
-		await expect(other.start(0)).rejects.toThrow("another project");
+		await expect(other.start(0)).rejects.toThrow("does not belong to this project");
 		expect(readFileSync(path, "utf8")).toContain("original project");
 	});
 
@@ -176,5 +176,19 @@ describe("plan web server", () => {
 		const other = new PlanServer(path, directory, async () => {});
 		servers.push(other);
 		await expect(other.start(Number(new URL(server.url).port))).rejects.toMatchObject({ code: "EADDRINUSE" });
+	});
+
+	it("selects another port when the default port is already in use", async () => {
+		const firstDirectory = mkdtempSync(join(tmpdir(), "pi-plan-server-"));
+		const secondDirectory = mkdtempSync(join(tmpdir(), "pi-plan-server-"));
+		directories.push(firstDirectory, secondDirectory);
+		const first = new PlanServer(join(firstDirectory, "plan.md"), firstDirectory, async () => {});
+		const second = new PlanServer(join(secondDirectory, "plan.md"), secondDirectory, async () => {});
+		servers.push(first, second);
+
+		await first.start();
+		await second.start();
+
+		expect(new URL(second.url).port).not.toBe(new URL(first.url).port);
 	});
 });

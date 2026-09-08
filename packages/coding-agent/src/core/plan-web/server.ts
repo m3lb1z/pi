@@ -31,7 +31,7 @@ export interface PlanAction {
 const MAX_PLAN_BYTES = 1024 * 1024;
 const MAX_ACTION_BYTES = MAX_PLAN_BYTES + 64 * 1024;
 
-/** One listening process owns the global plan. Approval always rechecks the disk revision. */
+/** One listening process owns a project plan. Approval always rechecks the disk revision. */
 export class PlanServer {
 	readonly path: string;
 	readonly token = randomBytes(32).toString("hex");
@@ -60,14 +60,33 @@ export class PlanServer {
 		return `http://localhost:${this.port}/#${this.token}`;
 	}
 
-	async start(port = 7337, replacing = false): Promise<void> {
-		await new Promise<void>((resolve, reject) => {
-			this.server.once("error", reject);
-			this.server.listen(port, "127.0.0.1", () => {
-				this.server.removeListener("error", reject);
-				resolve();
+	async start(port?: number, replacing = false): Promise<void> {
+		const listen = async (candidate: number): Promise<void> => {
+			await new Promise<void>((resolve, reject) => {
+				const cleanup = (): void => {
+					this.server.removeListener("error", onError);
+					this.server.removeListener("listening", onListening);
+				};
+				const onError = (error: Error): void => {
+					cleanup();
+					reject(error);
+				};
+				const onListening = (): void => {
+					cleanup();
+					resolve();
+				};
+				this.server.once("error", onError);
+				this.server.once("listening", onListening);
+				this.server.listen(candidate, "127.0.0.1");
 			});
-		});
+		};
+		try {
+			await listen(port ?? 7337);
+		} catch (error) {
+			if (port !== undefined || !(error instanceof Error && "code" in error && error.code === "EADDRINUSE"))
+				throw error;
+			await listen(0);
+		}
 		const address = this.server.address();
 		if (address && typeof address !== "string") this.port = address.port;
 		try {
@@ -100,7 +119,7 @@ export class PlanServer {
 			const expected = `<!-- pi-plan-project: ${JSON.stringify(this.state.project)} -->`;
 			if (firstLine !== expected)
 				throw new Error(
-					"The global plan belongs to another project or has no project header. Use /plan <task> to replace it.",
+					"The saved plan does not belong to this project or has no valid project header. Use /plan <task> to replace it.",
 				);
 			content = raw.slice(firstLine.length + 1);
 		}

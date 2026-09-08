@@ -16,7 +16,7 @@ model list from `/model`; the planner list only includes reasoning models. Each
 mode defaults independently to **Default model**, which means the model active
 when `/plan` starts. Selecting a specific model is optional.
 
-The configuration is stored in `~/.pi/plan-models.json`. Planner uses high
+The configuration is stored in `~/.pi/agent/plan-models.json`. Planner uses high
 thinking; programming uses thinking off, clamped to what its model supports.
 Configuration does not change Pi's default model for other sessions.
 
@@ -26,10 +26,12 @@ Start a task:
 /plan Describe the task here
 ```
 
-Pi selects the planner, opens `http://localhost:7337`, and saves its Markdown plan
-to `~/.pi/plan_current.md`. The page displays the plan and current activity, with
-live updates over a server event stream. Changes made to the file outside Pi are
-also detected and invalidate its review state.
+Pi selects the planner, opens a local browser URL, and saves its Markdown plan to
+a project-specific file under `~/.pi/agent/plans/`. It prefers port 7337 and uses
+an available port when another planning session already owns it. The page displays
+the plan and current activity, with live updates over a server event stream.
+Changes made to the file outside Pi are also detected and invalidate its review
+state.
 
 Planner uses a document-editing system prompt rather than the default coding
 assistant prompt. The current plan is included directly in that context, so the
@@ -40,7 +42,7 @@ match exactly once; blocks are applied sequentially and the entire edit fails
 without writing when any block is invalid. A full rewrite still requires an
 explicit request and `replaceExisting`.
 
-Create `~/.pi/SYSTEM_PLANNING.md` to add custom instructions only to the planner
+Create `~/.pi/agent/SYSTEM_PLANNING.md` to add custom instructions only to the planner
 system prompt. A trusted project may override it with
 `.pi/SYSTEM_PLANNING.md`. `SYSTEM.md` remains exclusive to normal programming
 mode. Custom planning instructions cannot override the restricted tools,
@@ -69,13 +71,16 @@ Pi is busy.
 starts a new planner cycle with an empty `plan_current.md`, so the next terminal
 prompt can describe the task. After a restart it loads a saved plan for the same
 project and requires fresh approval.
-The project is recorded in the first comment of the Markdown file. Plans from
-another project are rejected; `/plan <new task>` explicitly replaces them.
+The project is recorded in the first comment of the Markdown file. Each canonical
+project path has an independent persisted plan. Legacy `~/.pi/agent/plan_current.md`
+files with a valid project header are moved into this per-project storage when
+`/plan` starts.
 
 ## Access and lifecycle
 
-- One terminal owns the global plan and port 7337 at a time. Another terminal
-  receives a port conflict instead of taking over the session.
+- Each terminal first tries port 7337. If it is already owned by another plan
+  session, Pi selects an available local port so multiple projects can plan at
+  the same time.
 - Planner only has the restricted `ripgrep`, `edit_plan`, and `write_plan`.
   Shell commands, file discovery, direct reads, code writes, and other extension
   tools are unavailable during planning.

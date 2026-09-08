@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -9,7 +9,7 @@ import type {
 	ExtensionContext,
 	RegisteredCommand,
 } from "../src/core/extensions/types.ts";
-import { registerPlanWeb } from "../src/core/plan-web/extension.ts";
+import { getProjectPlanPath, registerPlanWeb } from "../src/core/plan-web/extension.ts";
 import type { PlanState } from "../src/core/plan-web/server.ts";
 import { builtInExtensions } from "../src/extensions/index.ts";
 
@@ -102,6 +102,7 @@ async function setup(
 		sendUserMessage,
 	} as unknown as ExtensionAPI;
 	registerPlanWeb(api, { directory: join(directory, ".pi"), port: 0 });
+	const planPath = getProjectPlanPath(join(directory, ".pi"), realpathSync(directory));
 	const emit = async (name: string, event: unknown = {}) => events.get(name)?.(event, ctx);
 	cleanup.push(async () => {
 		await emit("session_shutdown");
@@ -144,6 +145,7 @@ async function setup(
 	}
 	return {
 		directory,
+		planPath,
 		ctx,
 		command,
 		emit,
@@ -275,7 +277,7 @@ describe("plan web extension", () => {
 		for (const toolName of ["bash", "write", "edit", "custom_tool"]) {
 			expect(await test.emit("tool_call", { toolName })).toBeUndefined();
 		}
-		const path = join(test.directory, ".pi/plan_current.md");
+		const path = test.planPath;
 		writeFileSync(path, `${readFileSync(path, "utf8")}\nChanged`);
 		expect(await test.emit("tool_call", { toolName: "write" })).toMatchObject({ block: true });
 	});
@@ -301,12 +303,43 @@ describe("plan web extension", () => {
 		expect(test.activeTools()).toContain("write_plan");
 	});
 
+	it("migrates the legacy global plan into project-specific storage", async () => {
+		const test = await setup();
+		const legacyPath = join(test.directory, ".pi/plan_current.md");
+		writeFileSync(
+			legacyPath,
+			`<!-- pi-plan-project: ${JSON.stringify(realpathSync(test.directory))} -->\nSaved plan`,
+		);
+
+		await test.command("plan");
+
+		expect(existsSync(legacyPath)).toBe(false);
+		expect(readFileSync(test.planPath, "utf8")).toContain("Saved plan");
+		expect(await test.state()).toMatchObject({ content: "Saved plan", status: "review" });
+	});
+
+	it("moves a legacy plan for another project aside and starts independently", async () => {
+		const test = await setup();
+		const legacyPath = join(test.directory, ".pi/plan_current.md");
+		const otherProject = "/different/project";
+		writeFileSync(legacyPath, `<!-- pi-plan-project: ${JSON.stringify(otherProject)} -->\nOther plan`);
+
+		await test.command("plan");
+
+		expect(existsSync(legacyPath)).toBe(false);
+		expect(readFileSync(getProjectPlanPath(join(test.directory, ".pi"), otherProject), "utf8")).toContain(
+			"Other plan",
+		);
+		expect(existsSync(test.planPath)).toBe(false);
+		expect(await test.state()).toMatchObject({ content: "", status: "draft" });
+	});
+
 	it("applies exact plan diff blocks sequentially and rejects an implicit whole-document rewrite", async () => {
 		const test = await setup();
 		await test.plan();
 		await test.action("revise", "Clarify validation");
 		await test.emit("before_agent_start", { systemPrompt: "Base" });
-		const path = join(test.directory, ".pi/plan_current.md");
+		const path = test.planPath;
 		const original = readFileSync(path, "utf8");
 		await expect(test.execute("write_plan", { content: "Replacement" })).rejects.toThrow("edit_plan");
 		await test.execute("edit_plan", {
@@ -334,7 +367,7 @@ ${">>>>>>> REPLACE"}`,
 		await test.plan();
 		await test.action("revise", "Clarify validation");
 		await test.emit("before_agent_start", { systemPrompt: "Base" });
-		const path = join(test.directory, ".pi/plan_current.md");
+		const path = test.planPath;
 		const original = readFileSync(path, "utf8");
 		await expect(
 			test.execute("edit_plan", {

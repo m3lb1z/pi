@@ -1,10 +1,10 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { CONFIG_DIR_NAME } from "../../config.ts";
+import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
 import { PlanModeSelectorComponent } from "../../modes/interactive/components/plan-mode-selector.ts";
 import { stripBom } from "../../utils/text.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "../defaults.ts";
@@ -88,9 +88,31 @@ export interface PlanExtensionOptions {
 	port?: number;
 }
 
+export function getProjectPlanPath(directory: string, project: string): string {
+	const projectId = createHash("sha256").update(project).digest("hex");
+	return join(directory, "plans", `${projectId}.md`);
+}
+
+function migrateLegacyPlan(directory: string): void {
+	const legacyPath = join(directory, "plan_current.md");
+	if (!existsSync(legacyPath)) return;
+	const firstLine = readFileSync(legacyPath, "utf8").split("\n", 1)[0];
+	const prefix = "<!-- pi-plan-project: ";
+	if (!firstLine.startsWith(prefix) || !firstLine.endsWith(" -->")) return;
+	try {
+		const project: unknown = JSON.parse(firstLine.slice(prefix.length, -4));
+		if (typeof project !== "string") return;
+		const destination = getProjectPlanPath(directory, project);
+		if (existsSync(destination)) return;
+		mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+		renameSync(legacyPath, destination);
+	} catch {
+		// Leave malformed or inaccessible legacy plans untouched.
+	}
+}
+
 export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions = {}): void {
-	const directory = options.directory ?? join(homedir(), ".pi", "agent");
-	const planPath = join(directory, "plan_current.md");
+	const directory = options.directory ?? getAgentDir();
 	const configPath = join(directory, "plan-models.json");
 	let server: PlanServer | undefined;
 	let context: ExtensionContext | undefined;
@@ -164,7 +186,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		savedTools ??= pi.getActiveTools().filter((name) => !PLANNER_TOOLS.includes(name));
 		mode = next;
 		pi.setActiveTools(next === "planner" ? PLAN_DOCUMENT_TOOLS : savedTools);
-		context?.ui.setStatus("plan-web", `${next} · localhost:7337`);
+		context?.ui.setStatus("plan-web", `${next} · ${server ? new URL(server.url).host : "localhost:7337"}`);
 	}
 
 	function configurePlannerInspection(prompt: string): void {
@@ -186,7 +208,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		current.write("");
 		configurePlannerInspection(task);
 		pi.sendUserMessage(
-			`Create the planning document ${planPath} for this task in ${ctx.cwd}:\n${task.trim()}\n\nThe deliverable is the plan document, not code. Do not explore the repository. Only when the task contains an explicit @file mention may you use the ripgrep tool for a narrow keyword search for a fact missing from the attached content. Save the initial whole draft with write_plan; once the plan has content, use edit_plan SEARCH/REPLACE blocks for focused changes. Describe the objective, scope, decisions, steps, validation, and open questions. Verify the resulting text from context and respond with a short summary.`,
+			`Create the planning document ${current.path} for this task in ${ctx.cwd}:\n${task.trim()}\n\nThe deliverable is the plan document, not code. Do not explore the repository. Only when the task contains an explicit @file mention may you use the ripgrep tool for a narrow keyword search for a fact missing from the attached content. Save the initial whole draft with write_plan; once the plan has content, use edit_plan SEARCH/REPLACE blocks for focused changes. Describe the objective, scope, decisions, steps, validation, and open questions. Verify the resulting text from context and respond with a short summary.`,
 			{ deliverAs: "followUp" },
 		);
 	}
@@ -276,7 +298,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 						),
 				);
 			} catch (error) {
-				ctx.ui.notify(String(error), "error");
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}
 		},
 	});
@@ -295,7 +317,9 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 				context = ctx;
 				owner = ctx.sessionManager.getSessionId();
 				if (!server) {
-					created = new PlanServer(planPath, realpathSync(ctx.cwd), action);
+					const project = realpathSync(ctx.cwd);
+					migrateLegacyPlan(directory);
+					created = new PlanServer(getProjectPlanPath(directory, project), project, action);
 					await created.start(options.port, Boolean(args.trim()));
 					server = created;
 				}
@@ -320,7 +344,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 				ctx.ui.notify(`Plan: ${server.url}`);
 			} catch (error) {
 				if (created && server === created) await cleanup();
-				ctx.ui.notify(String(error), "error");
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			} finally {
 				commandPending = false;
 			}
@@ -345,17 +369,18 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 			requireOwner();
 			if (signal?.aborted || mode !== "planner" || server?.state.status !== "planning")
 				throw new Error("Plan editing requires active planner mode.");
-			server.refresh();
-			const original = server.state.content;
+			const current = server;
+			current.refresh();
+			const original = current.state.content;
 			if (!original.trim()) throw new Error("The plan is empty. Create the whole document with write_plan first.");
-			const result = applyPlanDiff(original, input.diff, planPath);
-			server.write(restoreLineEndings(result.content, detectLineEnding(original)));
+			const result = applyPlanDiff(original, input.diff, current.path);
+			current.write(restoreLineEndings(result.content, detectLineEnding(original)));
 			wrotePlan = true;
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Applied ${result.blockCount} exact diff block(s) to ${planPath}. Unrelated text was preserved.`,
+						text: `Applied ${result.blockCount} exact diff block(s) to ${current.path}. Unrelated text was preserved.`,
 					},
 				],
 				details: undefined,
@@ -375,15 +400,18 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 			requireOwner();
 			if (signal?.aborted || mode !== "planner" || server?.state.status !== "planning")
 				throw new Error("Plan writing requires active planner mode.");
-			server.refresh();
-			if (server.state.content.trim() && !input.replaceExisting)
+			const current = server;
+			current.refresh();
+			if (current.state.content.trim() && !input.replaceExisting)
 				throw new Error(
 					"The plan already exists in context. Use edit_plan for targeted changes. Do not transcribe the entire plan.",
 				);
-			server.write(input.content);
+			current.write(input.content);
 			wrotePlan = true;
 			return {
-				content: [{ type: "text", text: `Saved ${planPath}. Browser approval is required before implementation.` }],
+				content: [
+					{ type: "text", text: `Saved ${current.path}. Browser approval is required before implementation.` },
+				],
 				details: undefined,
 			};
 		},
@@ -443,7 +471,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 			return {
 				systemPrompt: buildPlannerPrompt(
 					{ ...event.systemPromptOptions, cwd: ctx.cwd },
-					planPath,
+					server.path,
 					server.state.content,
 					inspectionAllowed,
 					readPlannerSystemPrompt(ctx),

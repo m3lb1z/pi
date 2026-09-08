@@ -25,8 +25,6 @@ fi
 echo "Installing the local packages globally..."
 npm install -g --ignore-scripts "${tarballs[@]}"
 
-hash -r
-
 if ! command -v pi >/dev/null 2>&1; then
 	echo "Installation completed, but pi is not available in PATH." >&2
 	echo "Global npm bin directory: $(npm prefix -g)/bin" >&2
@@ -36,3 +34,4 @@ fi
 echo "Installed local Pi variant:"
 echo "  Executable: $(command -v pi)"
 echo "  Version: $(pi --version)"
+echo "Run 'hash -r' in the current shell before invoking pi."
