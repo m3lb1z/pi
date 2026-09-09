@@ -9,7 +9,12 @@ import { PlanModeSelectorComponent } from "../../modes/interactive/components/pl
 import { stripBom } from "../../utils/text.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "../defaults.ts";
 import type { ExtensionAPI, ExtensionContext } from "../extensions/types.ts";
-import { detectLineEnding, normalizeToLF, restoreLineEndings } from "../tools/edit-diff.ts";
+import {
+	applyEditsToNormalizedContent,
+	detectLineEnding,
+	normalizeToLF,
+	restoreLineEndings,
+} from "../tools/edit-diff.ts";
 import { createGrepToolDefinition } from "../tools/grep.ts";
 import { buildPlannerPrompt } from "./prompts.ts";
 import { type PlanAction, PlanServer } from "./server.ts";
@@ -23,65 +28,6 @@ interface ModelChoice {
 type ModeConfig = Partial<Record<Mode, ModelChoice>>;
 const PLAN_DOCUMENT_TOOLS = ["edit_plan", "write_plan"];
 const PLANNER_TOOLS = ["ripgrep", ...PLAN_DOCUMENT_TOOLS];
-
-interface PlanDiffBlock {
-	search: string;
-	replace: string;
-}
-
-function parsePlanDiff(input: string): PlanDiffBlock[] {
-	const diff = normalizeToLF(input);
-	const startMarker = "<<<<<<< SEARCH\n";
-	const separator = "\n=======\n";
-	const endMarker = "\n>>>>>>> REPLACE";
-	const blocks: PlanDiffBlock[] = [];
-	let cursor = 0;
-
-	while (cursor < diff.length) {
-		while (diff[cursor] === "\n") cursor++;
-		if (cursor === diff.length) break;
-		if (!diff.startsWith(startMarker, cursor)) throw new Error("Invalid plan diff: expected <<<<<<< SEARCH.");
-
-		const searchStart = cursor + startMarker.length;
-		const separatorIndex = diff.indexOf(separator, searchStart);
-		if (separatorIndex === -1) throw new Error("Invalid plan diff: missing ======= separator.");
-		const replaceStart = separatorIndex + separator.length;
-		const endIndex = diff.indexOf(endMarker, replaceStart);
-		if (endIndex === -1) throw new Error("Invalid plan diff: missing >>>>>>> REPLACE.");
-
-		const search = diff.slice(searchStart, separatorIndex);
-		const replace = diff.slice(replaceStart, endIndex);
-		if (!search) throw new Error("Invalid plan diff: SEARCH must not be empty.");
-		if (search === replace) throw new Error("Invalid plan diff: SEARCH and REPLACE must differ.");
-		blocks.push({ search, replace });
-		cursor = endIndex + endMarker.length;
-	}
-
-	if (blocks.length === 0) throw new Error("Invalid plan diff: provide at least one SEARCH/REPLACE block.");
-	return blocks;
-}
-
-function applyPlanDiff(content: string, input: string, planPath: string): { content: string; blockCount: number } {
-	let working = normalizeToLF(content);
-	const blocks = parsePlanDiff(input);
-	for (let index = 0; index < blocks.length; index++) {
-		const block = blocks[index];
-		let occurrences = 0;
-		let offset = 0;
-		let matchIndex = working.indexOf(block.search, offset);
-		while (matchIndex !== -1) {
-			occurrences++;
-			offset = matchIndex + block.search.length;
-			matchIndex = working.indexOf(block.search, offset);
-		}
-		if (occurrences !== 1)
-			throw new Error(
-				`Plan diff block ${index + 1} SEARCH matched ${occurrences} times in ${planPath}; exactly one match is required.`,
-			);
-		working = working.replace(block.search, block.replace);
-	}
-	return { content: working, blockCount: blocks.length };
-}
 
 export interface PlanExtensionOptions {
 	directory?: string;
@@ -208,7 +154,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		current.write("");
 		configurePlannerInspection(task);
 		pi.sendUserMessage(
-			`Create the planning document ${current.path} for this task in ${ctx.cwd}:\n${task.trim()}\n\nThe deliverable is the plan document, not code. Do not explore the repository. Only when the task contains an explicit @file mention may you use the ripgrep tool for a narrow keyword search for a fact missing from the attached content. Save the initial whole draft with write_plan; once the plan has content, use edit_plan SEARCH/REPLACE blocks for focused changes. Describe the objective, scope, decisions, steps, validation, and open questions. Verify the resulting text from context and respond with a short summary.`,
+			`Create the planning document ${current.path} for this task in ${ctx.cwd}:\n${task.trim()}\n\nThe deliverable is the plan document, not code. Do not explore the repository. Only when the task contains an explicit @file mention may you use the ripgrep tool for a narrow keyword search for a fact missing from the attached content. Save the initial whole draft with write_plan; once the plan has content, use edit_plan with one or more oldText/newText replacements for focused changes. Describe the objective, scope, decisions, steps, validation, and open questions. Verify the resulting text from context and respond with a short summary.`,
 			{ deliverAs: "followUp" },
 		);
 	}
@@ -369,13 +315,21 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		name: "edit_plan",
 		label: "Edit plan_current.md",
 		description:
-			"Revise a nonempty plan_current.md with one or more exact SEARCH/REPLACE blocks. Each SEARCH must match exactly once. Blocks are validated and applied sequentially and atomically. This edits a planning document, never source code.",
+			"Revise a nonempty plan_current.md with one or more targeted oldText/newText replacements. Every oldText must identify a unique, non-overlapping region of the original plan. All replacements are validated and applied atomically. This edits a planning document, never source code.",
 		parameters: Type.Object({
-			diff: Type.String({
-				minLength: 1,
-				description:
-					"Blocks formatted as <<<<<<< SEARCH, exact existing text, =======, replacement text, and >>>>>>> REPLACE.",
-			}),
+			edits: Type.Array(
+				Type.Object({
+					oldText: Type.String({
+						description: "Existing plan text for one targeted replacement. It must be unique in the plan.",
+					}),
+					newText: Type.String({ description: "Replacement text for this targeted edit." }),
+				}),
+				{
+					minItems: 1,
+					description:
+						"One or more non-overlapping replacements. Every oldText is matched against the original plan, not against the result of an earlier edit.",
+				},
+			),
 		}),
 		async execute(_id, input, signal) {
 			requireOwner();
@@ -385,14 +339,14 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 			current.refresh();
 			const original = current.state.content;
 			if (!original.trim()) throw new Error("The plan is empty. Create the whole document with write_plan first.");
-			const result = applyPlanDiff(original, input.diff, current.path);
-			current.write(restoreLineEndings(result.content, detectLineEnding(original)));
+			const { newContent } = applyEditsToNormalizedContent(normalizeToLF(original), input.edits, current.path);
+			current.write(restoreLineEndings(newContent, detectLineEnding(original)));
 			wrotePlan = true;
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Applied ${result.blockCount} exact diff block(s) to ${current.path}. Unrelated text was preserved.`,
+						text: `Applied ${input.edits.length} targeted edit(s) to ${current.path}. Unrelated text was preserved.`,
 					},
 				],
 				details: undefined,

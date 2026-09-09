@@ -37,10 +37,11 @@ Planner uses a document-editing system prompt rather than the default coding
 assistant prompt. The current plan is included directly in that context, so the
 planner never reads `plan_current.md` with a tool. When the plan is empty,
 `write_plan` writes the complete document in whole mode. Once it has content,
-`edit_plan` accepts exact `SEARCH/REPLACE` blocks in diff mode. Every search must
-match exactly once; blocks are applied sequentially and the entire edit fails
-without writing when any block is invalid. A full rewrite still requires an
-explicit request and `replaceExisting`.
+`edit_plan` accepts an array of targeted `oldText`/`newText` replacements in diff
+mode. Every `oldText` must identify one unique, non-overlapping region of the
+original plan. Multiple replacements are validated together and the entire edit
+fails without writing when any replacement is invalid. A full rewrite still
+requires an explicit request and `replaceExisting`.
 
 Create `~/.pi/agent/SYSTEM_PLANNING.md` to add custom instructions only to the planner
 system prompt. A trusted project may override it with

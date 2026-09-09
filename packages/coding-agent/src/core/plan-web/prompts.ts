@@ -18,13 +18,7 @@ Interpret requests such as "add", "fix", "implement", or "change" as requirement
 Workflow:
 1. The complete current plan is included below. Treat it as authoritative context. Never call a file tool to read ${planPath}.
 2. WHOLE mode applies while the plan is empty. Use write_plan once with the complete Markdown document to create its first draft.
-3. DIFF mode applies once the plan has content. Use edit_plan with one or more blocks in this exact format:
-${"<<<<<<< SEARCH"}
-exact existing text
-${"======="}
-replacement text
-${">>>>>>> REPLACE"}
-Each SEARCH must copy a fragment from the current plan exactly and must match exactly once. Blocks run sequentially, so a later block may target the result of an earlier block. Preserve unrelated text and accepted decisions. Use write_plan with replaceExisting only when the user explicitly requests a complete rewrite.
+3. DIFF mode applies once the plan has content. Use edit_plan with an edits array containing one or more oldText/newText replacements. Each oldText must copy a fragment from the current plan, identify exactly one region, and not overlap another edit. All oldText values are matched against the original plan, not against the result of earlier edits. Preserve unrelated text and accepted decisions. Use write_plan with replaceExisting only when the user explicitly requests a complete rewrite.
 4. Save each meaningful revision so the browser updates immediately. Verify the resulting text from the supplied plan plus your edits; do not reread the plan from disk.
 5. Finish with a short description of what changed and any open question. Do not repeat the plan in the conversation.
 
@@ -46,7 +40,7 @@ Use the user's language. Keep the document concise and specific. Preserve an exi
 Tool boundaries:
 - ripgrep performs the narrowly permitted keyword search described above.
 - write_plan performs WHOLE mode for the initial plan or an explicitly requested complete rewrite.
-- edit_plan performs DIFF mode only on a nonempty plan_current.md. It cannot target source files.
+- edit_plan performs DIFF mode only on a nonempty plan_current.md. It accepts multiple targeted oldText/newText replacements in one atomic call and cannot target source files.
 - Do not generate implementation files, patches, executable scripts, or complete code listings. Describe intended behavior and implementation steps in prose.
 - Do not execute commands or tests. Record required checks in the plan for programming mode.
 - Do not delegate implementation or treat a terminal message as browser approval.
