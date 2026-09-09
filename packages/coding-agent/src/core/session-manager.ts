@@ -79,6 +79,11 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	fromHook?: boolean;
 }
 
+/** Marks a durable boundary before which messages are excluded from model context. */
+export interface ContextResetEntry extends SessionEntryBase {
+	type: "context_reset";
+}
+
 export interface BranchSummaryEntry<T = unknown> extends SessionEntryBase {
 	type: "branch_summary";
 	fromId: string;
@@ -146,6 +151,7 @@ export type SessionEntry =
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
 	| CompactionEntry
+	| ContextResetEntry
 	| BranchSummaryEntry
 	| CustomEntry
 	| CustomMessageEntry
@@ -420,7 +426,15 @@ export function buildContextEntries(
 	leafId?: string | null,
 	byId?: Map<string, SessionEntry>,
 ): SessionEntry[] {
-	const path = buildSessionPath(entries, leafId, byId);
+	const fullPath = buildSessionPath(entries, leafId, byId);
+	let contextResetIndex = -1;
+	for (let index = fullPath.length - 1; index >= 0; index--) {
+		if (fullPath[index].type === "context_reset") {
+			contextResetIndex = index;
+			break;
+		}
+	}
+	const path = contextResetIndex === -1 ? fullPath : fullPath.slice(contextResetIndex + 1);
 	let compaction: CompactionEntry | null = null;
 
 	for (const entry of path) {
@@ -1127,6 +1141,18 @@ export class SessionManager {
 			details,
 			usage,
 			fromHook,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	/** Append a durable context boundary and advance the active branch. */
+	appendContextReset(): string {
+		const entry: ContextResetEntry = {
+			type: "context_reset",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
 		};
 		this._appendEntry(entry);
 		return entry.id;

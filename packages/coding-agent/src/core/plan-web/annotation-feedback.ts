@@ -1,6 +1,5 @@
 export type PlanAnnotationFeedback =
 	| { type: "comment"; line: number; text: string; comment: string }
-	| { type: "deletion"; line: number; text: string; comment: string }
 	| { type: "global"; comment: string };
 
 export function formatAnnotationFeedback(annotations: PlanAnnotationFeedback[]): string {
@@ -8,11 +7,6 @@ export function formatAnnotationFeedback(annotations: PlanAnnotationFeedback[]):
 	const sections = annotations.map((annotation, index) => {
 		if (annotation.type === "global") {
 			return `## ${index + 1}. General feedback\n> ${annotation.comment}`;
-		}
-		if (annotation.type === "deletion") {
-			const longestFence = Math.max(2, ...Array.from(annotation.text.matchAll(/`+/g), (match) => match[0].length));
-			const fence = "`".repeat(longestFence + 1);
-			return `## ${index + 1}. (line ${annotation.line}) Remove this\n${fence}\n${annotation.text}\n${fence}\n> Remove this from the plan.`;
 		}
 		return `## ${index + 1}. (line ${annotation.line}) Feedback on: "${annotation.text}"\n> ${annotation.comment}`;
 	});

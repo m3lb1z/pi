@@ -10,6 +10,7 @@ import {
 	Plus,
 	RotateCcw,
 	Send,
+	SquarePen,
 	Trash2,
 	Workflow,
 	X,
@@ -329,12 +330,7 @@ function Markdown({ annotations, content, onSelection, selection }) {
 				.filter((annotation) => annotation.type === "comment")
 				.map((annotation) => rangeFromOffsets(container.current, annotation.start, annotation.end))
 				.filter(Boolean);
-			const deletionRanges = annotations
-				.filter((annotation) => annotation.type === "deletion")
-				.map((annotation) => rangeFromOffsets(container.current, annotation.start, annotation.end))
-				.filter(Boolean);
 			CSS.highlights.set("plan-comment", new Highlight(...commentRanges));
-			CSS.highlights.set("plan-deletion", new Highlight(...deletionRanges));
 			const selectionRange = selection
 				? rangeFromOffsets(container.current, selection.start, selection.end)
 				: null;
@@ -342,7 +338,6 @@ function Markdown({ annotations, content, onSelection, selection }) {
 		}
 		return () => {
 			globalThis.CSS?.highlights?.delete("plan-comment");
-			globalThis.CSS?.highlights?.delete("plan-deletion");
 			globalThis.CSS?.highlights?.delete("plan-selection");
 			for (const root of roots) root.unmount();
 		};
@@ -377,7 +372,7 @@ function Markdown({ annotations, content, onSelection, selection }) {
 	);
 }
 
-function SelectionToolbar({ selection, onCancel, onComment, onDelete }) {
+function SelectionToolbar({ selection, onCancel, onComment, onEdit }) {
 	const [position, setPosition] = useState(null);
 
 	useEffect(() => {
@@ -421,8 +416,8 @@ function SelectionToolbar({ selection, onCancel, onComment, onDelete }) {
 			<IconButton label="Comentar selección" onClick={onComment}>
 				<MessageSquareText />
 			</IconButton>
-			<IconButton label="Eliminar selección" onClick={onDelete}>
-				<Trash2 />
+			<IconButton label="Editar Markdown" onClick={onEdit}>
+				<SquarePen />
 			</IconButton>
 			<span className="selection-toolbar-divider" />
 			<IconButton label="Cancelar selección" onClick={onCancel}>
@@ -516,6 +511,76 @@ function CommentModal({ selection, onCancel, onSubmit }) {
 	);
 }
 
+function MarkdownEditor({ busy, content, selection, onCancel, onSave }) {
+	const normalizedContent = useMemo(() => content.replace(/\r\n?/g, "\n"), [content]);
+	const [value, setValue] = useState(normalizedContent);
+	const textarea = useRef(null);
+
+	useEffect(() => {
+		if (!textarea.current) return;
+		const borderHeight = textarea.current.offsetHeight - textarea.current.clientHeight;
+		textarea.current.style.height = "0";
+		textarea.current.style.height = `${textarea.current.scrollHeight + borderHeight}px`;
+	}, [value]);
+
+	useEffect(() => {
+		const resize = () => {
+			if (!textarea.current) return;
+			const borderHeight = textarea.current.offsetHeight - textarea.current.clientHeight;
+			textarea.current.style.height = "0";
+			textarea.current.style.height = `${textarea.current.scrollHeight + borderHeight}px`;
+		};
+		addEventListener("resize", resize);
+		return () => removeEventListener("resize", resize);
+	}, []);
+
+	useEffect(() => {
+		const exactIndex = selection.text ? normalizedContent.indexOf(selection.text) : -1;
+		const hasUniqueExactMatch =
+			exactIndex >= 0 && normalizedContent.indexOf(selection.text, exactIndex + selection.text.length) === -1;
+		const linesBeforeSelection = normalizedContent.split("\n").slice(0, Math.max(0, selection.line - 1));
+		const lineStart = linesBeforeSelection.join("\n").length + (linesBeforeSelection.length > 0 ? 1 : 0);
+		const start = hasUniqueExactMatch ? exactIndex : lineStart;
+		textarea.current?.focus();
+		textarea.current?.setSelectionRange(start, hasUniqueExactMatch ? exactIndex + selection.text.length : start);
+	}, [normalizedContent, selection]);
+
+	return (
+		<form
+			className="markdown-editor"
+			aria-label="Editar Markdown"
+			onSubmit={(event) => {
+				event.preventDefault();
+				onSave(value);
+			}}
+		>
+			<div className="markdown-editor-header">
+				<div>
+					<h2>Editar Markdown</h2>
+					<p>Edita directamente el contenido raw del plan.</p>
+				</div>
+				<div className="markdown-editor-actions">
+					<button type="button" className="button" disabled={busy} onClick={onCancel}>
+						<X aria-hidden="true" />
+						Cancelar
+					</button>
+					<button type="submit" className="button primary" disabled={busy || value === normalizedContent}>
+						<Check aria-hidden="true" />
+						Guardar
+					</button>
+				</div>
+			</div>
+			<textarea
+				ref={textarea}
+				rows="1"
+				spellCheck="false"
+				value={value}
+				onChange={(event) => setValue(event.target.value)}
+			/>
+		</form>
+	);
+}
+
 function ConfirmDialog({ busy, description, onCancel, onConfirm, title }) {
 	return (
 		<div
@@ -579,7 +644,7 @@ function AnnotationSidebar({ annotations, busy, canSubmit, copied, onAddGlobal, 
 								) : (
 									<button type="button" className="annotation-link" onClick={() => onSelect(annotation)}>
 										<Highlighter aria-hidden="true" />
-										{annotation.type === "comment" ? "Comentario" : "Eliminación"} · línea {annotation.line}
+										Comentario · línea {annotation.line}
 									</button>
 								)}
 								<IconButton label={`Eliminar anotación ${index + 1}`} onClick={() => onRemove(annotation.id)}>
@@ -587,7 +652,7 @@ function AnnotationSidebar({ annotations, busy, canSubmit, copied, onAddGlobal, 
 								</IconButton>
 							</div>
 							{annotation.type !== "global" && <blockquote>{annotation.text}</blockquote>}
-							{annotation.type !== "deletion" && <p>{annotation.comment}</p>}
+							<p>{annotation.comment}</p>
 						</article>
 					))
 				)}
@@ -625,6 +690,7 @@ function App() {
 	const [annotations, setAnnotations] = useState([]);
 	const [pendingSelection, setPendingSelection] = useState(null);
 	const [commentSelection, setCommentSelection] = useState(null);
+	const [editorSelection, setEditorSelection] = useState(null);
 	const [copied, setCopied] = useState(false);
 	const revision = state?.revision;
 
@@ -649,6 +715,7 @@ function App() {
 		setAnnotations([]);
 		setPendingSelection(null);
 		setCommentSelection(null);
+		setEditorSelection(null);
 		setShowDiscardConfirmation(false);
 		setShowGlobalAnnotation(false);
 	}, [revision]);
@@ -714,6 +781,12 @@ function App() {
 				<h1>Pi Planning</h1>
 				<nav className="navbar-actions" aria-label="Acciones del plan">
 					<ActionButton
+						disabled={busy || !connected || !idle || !hasPlan}
+						icon={SquarePen}
+						label="Editar"
+						onClick={() => setEditorSelection({ line: 1, text: "" })}
+					/>
+					<ActionButton
 						className="primary"
 						disabled={busy || !connected || state?.status !== "review"}
 						icon={Check}
@@ -745,7 +818,17 @@ function App() {
 			<main className="review-layout">
 				<section className="plan-surface">
 					<div className="plan-content">
-						{hasPlan ? (
+						{hasPlan ? editorSelection ? (
+							<MarkdownEditor
+								busy={busy}
+								content={state.content}
+								selection={editorSelection}
+								onCancel={() => setEditorSelection(null)}
+								onSave={async (content) => {
+									if (await action("save", content)) setEditorSelection(null);
+								}}
+							/>
+						) : (
 							<Markdown
 								annotations={annotations}
 								content={state.content}
@@ -781,10 +864,13 @@ function App() {
 						setCommentSelection(pendingSelection);
 						setPendingSelection(null);
 					}}
-					onDelete={() => addAnnotation(pendingSelection, "deletion")}
+					onEdit={() => {
+						setEditorSelection(pendingSelection);
+						setPendingSelection(null);
+						clearNativeSelection();
+					}}
 				/>
 			)}
-
 			{showGlobalAnnotation && (
 				<GlobalAnnotationModal
 					onCancel={() => setShowGlobalAnnotation(false)}

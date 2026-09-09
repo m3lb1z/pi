@@ -23,13 +23,13 @@ export interface PlanState {
 	result: string;
 }
 export interface PlanAction {
-	action: "approve" | "revise" | "discard" | "new";
+	action: "approve" | "revise" | "save" | "discard" | "new";
 	revision: string;
 	feedback: string;
 }
 
 const MAX_PLAN_BYTES = 1024 * 1024;
-const MAX_ACTION_BYTES = MAX_PLAN_BYTES + 64 * 1024;
+const MAX_ACTION_BYTES = MAX_PLAN_BYTES * 6 + 64 * 1024;
 
 /** One listening process owns a project plan. Approval always rechecks the disk revision. */
 export class PlanServer {
@@ -223,20 +223,25 @@ export class PlanServer {
 		if (!value || typeof value !== "object") throw new Error("Invalid action.");
 		const action = value as Partial<PlanAction>;
 		if (
-			!(["approve", "revise", "discard", "new"] as const).includes(
-				action.action as "approve" | "revise" | "discard" | "new",
+			!(["approve", "revise", "save", "discard", "new"] as const).includes(
+				action.action as "approve" | "revise" | "save" | "discard" | "new",
 			) ||
 			typeof action.revision !== "string" ||
 			typeof action.feedback !== "string"
 		)
 			throw new Error("Invalid action.");
 		if (this.actionPending) throw new Error("An action is already in progress.");
-		this.assertRevision(action.revision, action.action === "approve" || action.action === "revise");
+		this.assertRevision(
+			action.revision,
+			action.action === "approve" || action.action === "revise" || action.action === "save",
+		);
 		if (action.action === "approve" && this.state.status !== "review")
 			throw new Error("The planner must finish before approval.");
 		const idleStatuses: PlanStatus[] = ["draft", "review", "completed", "blocked", "failed"];
 		if (action.action === "revise" && (!action.feedback.trim() || !idleStatuses.includes(this.state.status)))
 			throw new Error("Wait for Pi to finish and enter your observations.");
+		if (action.action === "save" && !idleStatuses.includes(this.state.status))
+			throw new Error("Wait for Pi to finish before editing the plan.");
 		if (action.action === "new" && (!action.feedback.trim() || !idleStatuses.includes(this.state.status)))
 			throw new Error("Wait for Pi to finish and describe the new task.");
 		if (action.action === "discard" && !idleStatuses.includes(this.state.status))

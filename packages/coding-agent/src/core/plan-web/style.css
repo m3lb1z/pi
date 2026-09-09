@@ -40,7 +40,7 @@ button { color: inherit; }
 .button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
 .button.primary:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
 .button.danger { margin-left: auto; border-color: transparent; color: var(--danger); }
-.button.danger:hover:not(:disabled), .button.delete-selection:hover:not(:disabled) { border-color: #fecdd3; background: color-mix(in srgb, var(--danger-soft) 55%, var(--panel)); }
+.button.danger:hover:not(:disabled) { border-color: #fecdd3; background: color-mix(in srgb, var(--danger-soft) 55%, var(--panel)); }
 .button svg, .icon-button svg, .annotation-link svg { width: 17px; height: 17px; stroke-width: 2; }
 .error { max-width: 1380px; margin: 12px auto 0; padding: 11px 14px; border: 1px solid #fecaca; border-radius: 10px; background: #fef2f2; color: #b91c1c; }
 
@@ -73,13 +73,12 @@ button { color: inherit; }
 .markdown pre code { padding: 0; background: transparent; color: inherit; }
 .annotation-offset-text { display: none; }
 ::highlight(plan-comment) { color: inherit; background: var(--comment-soft); text-decoration: underline 2px var(--comment); text-underline-offset: 3px; }
-::highlight(plan-deletion) { color: inherit; background: var(--danger-soft); text-decoration: line-through 2px var(--danger); }
 ::highlight(plan-selection) { color: #111827; background: #fef500; }
 
 .selection-toolbar { position: fixed; z-index: 90; display: flex; gap: 3px; padding: 5px; border: 1px solid #3a465b; border-radius: 10px; background: #1e293b; color: #e5e7eb; box-shadow: 0 12px 30px #02061766; transform: translate(-50%, -100%); }
 .selection-toolbar.below { transform: translate(-50%, 0); }
 .selection-toolbar .icon-button:nth-child(1) { color: #fbbf24; }
-.selection-toolbar .icon-button:nth-child(2) { color: #f87171; }
+.selection-toolbar .icon-button:nth-child(2) { color: #93c5fd; }
 .selection-toolbar-divider { width: 1px; margin: 5px 2px; background: #475569; }
 
 .annotation-sidebar { position: sticky; top: 58px; display: flex; min-height: calc(100vh - 58px); max-height: calc(100vh - 58px); flex-direction: column; overflow: hidden; background: var(--panel); }
@@ -93,10 +92,8 @@ button { color: inherit; }
 .annotation-item { padding: 14px 16px; border-bottom: 1px solid var(--border); }
 .annotation-item.comment { border-left: 3px solid var(--comment); }
 .annotation-item.global { border-left: 3px solid var(--accent); }
-.annotation-item.deletion { border-left: 3px solid var(--danger); }
 .annotation-item-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .annotation-link { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: none; color: var(--comment); font-size: .74rem; font-weight: 750; cursor: pointer; }
-.annotation-item.deletion .annotation-link { color: var(--danger); }
 .annotation-item.global .annotation-link { color: var(--accent); cursor: default; }
 .annotation-item .icon-button { width: 28px; height: 28px; color: var(--muted); }
 .annotation-item blockquote { display: -webkit-box; margin: 8px 0; overflow: hidden; color: var(--muted); font: 11.5px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
@@ -126,6 +123,12 @@ button { color: inherit; }
 .modal h2 { margin: 0 0 6px; font-size: 1.2rem; }
 .modal p { margin: 0 0 14px; color: var(--muted); }
 .modal textarea { width: 100%; min-height: 130px; resize: vertical; padding: 11px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel-subtle); color: var(--text); }
+.markdown-editor { display: flex; flex-direction: column; gap: 14px; }
+.markdown-editor-header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.markdown-editor h2 { margin: 0 0 4px; font-size: 1.2rem; }
+.markdown-editor p { margin: 0; color: var(--muted); }
+.markdown-editor-actions { display: flex; flex: 0 0 auto; gap: 8px; }
+.markdown-editor textarea { display: block; width: 100%; min-height: 0; overflow: hidden; resize: none; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-subtle); color: var(--text); font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 4; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .button.destructive { border-color: var(--danger); background: var(--danger); color: #fff; }
 .button.destructive:hover:not(:disabled) { border-color: #b91c1c; background: #b91c1c; }

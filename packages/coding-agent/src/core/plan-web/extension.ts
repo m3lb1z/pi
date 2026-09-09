@@ -228,6 +228,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 					current.assertRevision(request.revision);
 					if (server !== current || !ctx.isIdle() || ctx.hasPendingMessages())
 						throw new Error("Session changed or Pi became busy. Review again.");
+					pi.clearContext();
 					activate("programming");
 					approvedRevision = request.revision;
 					lastAssistantText = "";
@@ -241,6 +242,17 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 					if (server === current && mode === "planner") await selectModel("planner", ctx);
 					throw error;
 				}
+			} else if (request.action === "save") {
+				current.assertRevision(request.revision);
+				const original = current.state.content;
+				approvedRevision = undefined;
+				activate("planner");
+				current.write(restoreLineEndings(request.feedback, detectLineEnding(original)));
+				current.update({
+					status: request.feedback.trim() ? "review" : "draft",
+					activity: "",
+					result: "",
+				});
 			} else {
 				await selectModel("planner", ctx);
 				requireOwner();

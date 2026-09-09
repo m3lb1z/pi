@@ -2622,6 +2622,13 @@ export class AgentSession {
 						this._emit({ type: "entry_appended", entry });
 					}
 				},
+				clearContext: () => {
+					if (!this.isIdle) throw new Error("Wait for the current agent operation before clearing context.");
+					const entryId = this.sessionManager.appendContextReset();
+					const entry = this.sessionManager.getEntry(entryId);
+					if (entry) this._emit({ type: "entry_appended", entry });
+					this.agent.reset();
+				},
 				setSessionName: (name) => {
 					this.setSessionName(name);
 				},
