@@ -89,7 +89,7 @@ export interface PlanExtensionOptions {
 }
 
 export function getProjectPlanPath(directory: string, project: string): string {
-	const projectId = createHash("sha256").update(project).digest("hex");
+	const projectId = createHash("sha256").update(project).digest("hex").slice(0, 16);
 	return join(directory, "plans", `${projectId}.md`);
 }
 

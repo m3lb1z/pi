@@ -34,7 +34,7 @@ const MAX_ACTION_BYTES = MAX_PLAN_BYTES * 6 + 64 * 1024;
 /** One listening process owns a project plan. Approval always rechecks the disk revision. */
 export class PlanServer {
 	readonly path: string;
-	readonly token = randomBytes(32).toString("hex");
+	readonly token = randomBytes(8).toString("hex");
 	readonly state: PlanState;
 	private server: Server;
 	private clients = new Set<ServerResponse>();
@@ -91,7 +91,8 @@ export class PlanServer {
 		if (address && typeof address !== "string") this.port = address.port;
 		try {
 			mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-			if (!replacing) this.refresh();
+			if (!existsSync(this.path)) this.write("");
+			else if (!replacing) this.refresh();
 			watchFile(this.path, { interval: 250, persistent: false }, this.fileChanged);
 			this.watching = true;
 		} catch (error) {
