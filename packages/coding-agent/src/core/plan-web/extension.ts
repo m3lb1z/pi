@@ -27,7 +27,9 @@ interface ModelChoice {
 }
 type ModeConfig = Partial<Record<Mode, ModelChoice>>;
 const PLAN_DOCUMENT_TOOLS = ["edit_plan", "write_plan"];
-const PLANNER_TOOLS = ["ripgrep", ...PLAN_DOCUMENT_TOOLS];
+const PLAN_EXTENSION_TOOLS = ["ripgrep", ...PLAN_DOCUMENT_TOOLS];
+const PLANNER_TOOLS = ["read", ...PLAN_DOCUMENT_TOOLS];
+const PLANNER_INSPECTION_TOOLS = ["ripgrep", ...PLANNER_TOOLS];
 
 export interface PlanExtensionOptions {
 	directory?: string;
@@ -129,15 +131,15 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 	}
 
 	function activate(next: Mode): void {
-		savedTools ??= pi.getActiveTools().filter((name) => !PLANNER_TOOLS.includes(name));
+		savedTools ??= pi.getActiveTools().filter((name) => !PLAN_EXTENSION_TOOLS.includes(name));
 		mode = next;
-		pi.setActiveTools(next === "planner" ? PLAN_DOCUMENT_TOOLS : savedTools);
+		pi.setActiveTools(next === "planner" ? PLANNER_TOOLS : savedTools);
 		context?.ui.setStatus("plan-web", `${next} · ${server ? new URL(server.url).host : "localhost:7337"}`);
 	}
 
 	function configurePlannerInspection(prompt: string): void {
 		inspectionAllowed = /<file name=|(?:^|\s)@[^\s]+/.test(prompt);
-		pi.setActiveTools(inspectionAllowed ? PLANNER_TOOLS : PLAN_DOCUMENT_TOOLS);
+		pi.setActiveTools(inspectionAllowed ? PLANNER_INSPECTION_TOOLS : PLANNER_TOOLS);
 	}
 
 	function readPlannerSystemPrompt(ctx: ExtensionContext): string | undefined {
@@ -155,7 +157,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		current.write("");
 		configurePlannerInspection(task);
 		pi.sendUserMessage(
-			`Create the planning document ${current.path} for this task in ${ctx.cwd}:\n${task.trim()}\n\nThe deliverable is the plan document, not code. Do not explore the repository. Only when the task contains an explicit @file mention may you use the ripgrep tool for a narrow keyword search for a fact missing from the attached content. Save the initial whole draft with write_plan; once the plan has content, use edit_plan with one or more oldText/newText replacements for focused changes. Describe the objective, scope, decisions, steps, validation, and open questions. Verify the resulting text from context and respond with a short summary.`,
+			`Create the planning document ${current.path} for this task in ${ctx.cwd}:\n${task.trim()}\n\nThe deliverable is the plan document, not code. Do not explore the repository broadly. Use read when a specific file is required to understand the task; an explicit file mention identifies content the user expects you to inspect. Only when the task contains an explicit file mention may you use ripgrep for a narrow keyword search. Save the initial whole draft with write_plan; once the plan has content, use edit_plan with one or more oldText/newText replacements for focused changes. Describe the objective, scope, decisions, steps, validation, and open questions. Verify the resulting text from context and respond with a short summary.`,
 			{ deliverAs: "followUp" },
 		);
 	}
@@ -408,7 +410,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 	});
 	pi.on("tool_call", (event) => {
 		if (!mode) {
-			if (PLANNER_TOOLS.includes(event.toolName)) return { block: true, reason: "Activate /plan first." };
+			if (PLAN_EXTENSION_TOOLS.includes(event.toolName)) return { block: true, reason: "Activate /plan first." };
 			return;
 		}
 		if (mode === "programming") {
@@ -433,7 +435,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 			event.input.context = 0;
 			event.input.literal = true;
 		}
-		if (!PLANNER_TOOLS.includes(event.toolName))
+		if (!PLANNER_INSPECTION_TOOLS.includes(event.toolName))
 			return { block: true, reason: "This tool is unavailable in the current plan mode." };
 	});
 	pi.on("user_bash", () => {
@@ -455,8 +457,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		lastAssistantText = "";
 		server.update({ status: mode === "planner" ? "planning" : "executing", activity: "", result: "" });
 		if (mode === "planner") {
-			inspectionAllowed =
-				/<file name=|(?:^|\s)@[^\s]+/.test(event.prompt) && pi.getActiveTools().includes("ripgrep");
+			configurePlannerInspection(event.prompt);
 			server.refresh();
 			return {
 				systemPrompt: buildPlannerPrompt(
@@ -492,7 +493,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		if (mode === "planner") {
 			server.update({ status: lastError ? "blocked" : wrotePlan ? "review" : "draft" });
 			inspectionAllowed = false;
-			pi.setActiveTools(PLAN_DOCUMENT_TOOLS);
+			pi.setActiveTools(PLANNER_TOOLS);
 		} else
 			server.update(
 				lastError
@@ -517,7 +518,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 	pi.on("session_shutdown", cleanup);
 	pi.on("session_start", async () => {
 		await cleanup();
-		pi.setActiveTools(pi.getActiveTools().filter((name) => !PLANNER_TOOLS.includes(name)));
+		pi.setActiveTools(pi.getActiveTools().filter((name) => !PLAN_EXTENSION_TOOLS.includes(name)));
 	});
 }
 
