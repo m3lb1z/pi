@@ -33,6 +33,13 @@ the plan and current activity, with live updates over a server event stream.
 Changes made to the file outside Pi are also detected and invalidate its review
 state.
 
+The **Images** panel accepts image selection, drag and drop, and clipboard paste.
+The local plan server validates and normalizes each upload, then stores it in a
+plan-specific `.attachments` directory with a `.attachments.json` manifest beside
+the Markdown file. The manifest is the persistent image annex: reopening the same
+project restores its thumbnails and names. Removing an image updates the annex;
+discarding or replacing the plan clears its annex as well.
+
 Planner uses a document-editing system prompt rather than the default coding
 assistant prompt. The current plan is included directly in that context, so the
 planner never reads `plan_current.md` with a tool. When the plan is empty,
@@ -86,7 +93,9 @@ files with a valid project header are moved into this per-project storage when
   Shell commands, file discovery, direct reads, code writes, and other extension
   tools are unavailable during planning.
 - Programming uses the same tools and system prompt as an ordinary Pi task. The
-  approved plan is included in the user message that starts implementation.
+  approved plan is included in the user message that starts implementation. Its
+  image annex is loaded from disk and mapped to Pi agent `ImageContent` blocks in
+  manifest order. Refinement requests receive the same image blocks.
 - If the persisted plan changes after approval, subsequent tool calls are
   blocked until the revised plan is reviewed again.
 - The HTTP server binds only to `127.0.0.1`. The browser link carries a temporary

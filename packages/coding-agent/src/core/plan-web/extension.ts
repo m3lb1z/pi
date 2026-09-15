@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
 import { PlanModeSelectorComponent } from "../../modes/interactive/components/plan-mode-selector.ts";
@@ -150,6 +150,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 	function startNewPlan(task: string, ctx: ExtensionContext, current: PlanServer): void {
 		approvedRevision = undefined;
 		lastAssistantText = "";
+		current.clearAttachments();
 		current.update({ status: "planning", result: "", activity: "" });
 		current.write("");
 		configurePlannerInspection(task);
@@ -157,6 +158,21 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 			`Create the planning document ${current.path} for this task in ${ctx.cwd}:\n${task.trim()}\n\nThe deliverable is the plan document, not code. Do not explore the repository. Only when the task contains an explicit @file mention may you use the ripgrep tool for a narrow keyword search for a fact missing from the attached content. Save the initial whole draft with write_plan; once the plan has content, use edit_plan with one or more oldText/newText replacements for focused changes. Describe the objective, scope, decisions, steps, validation, and open questions. Verify the resulting text from context and respond with a short summary.`,
 			{ deliverAs: "followUp" },
 		);
+	}
+
+	function attachPlanImages(text: string, current: PlanServer): string | Array<TextContent | ImageContent> {
+		const images = current.readAttachmentContent();
+		if (images.length === 0) return text;
+		const annex = current.state.attachments
+			.map((attachment, index) => `${index + 1}. [Image ${index + 1}] ${attachment.name}`)
+			.join("\n");
+		return [
+			{
+				type: "text",
+				text: `${text}\n\n<plan_attachments>\nThese persistent image annexes belong to the plan. Images follow this text in the listed order.\n${annex}\n</plan_attachments>`,
+			},
+			...images,
+		];
 	}
 
 	async function action(request: PlanAction): Promise<void> {
@@ -180,7 +196,10 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 					lastAssistantText = "";
 					current.update({ status: "executing", activity: "", result: "" });
 					pi.sendUserMessage(
-						`Implement the approved plan below in ${ctx.cwd}. Complete its validation and report the result. If the scope must change, stop and explain why.\n\n${current.state.content}`,
+						attachPlanImages(
+							`Implement the approved plan below in ${ctx.cwd}. Complete its validation and report the result. If the scope must change, stop and explain why.\n\n${current.state.content}`,
+							current,
+						),
 						{ deliverAs: "followUp" },
 					);
 				} catch (error) {
@@ -210,7 +229,10 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 					current.update({ status: "planning", result: "", activity: "" });
 					configurePlannerInspection(request.feedback);
 					pi.sendUserMessage(
-						`The current plan is already in context. Apply these observations to it using edit_plan. Change only the affected passages, preserve unrelated text, and verify the resulting plan logically. Do not implement code or repeat the complete plan in the conversation.\n\n${request.feedback}`,
+						attachPlanImages(
+							`The current plan is already in context. Apply these observations to it using edit_plan. Change only the affected passages, preserve unrelated text, and verify the resulting plan logically. Do not implement code or repeat the complete plan in the conversation.\n\n${request.feedback}`,
+							current,
+						),
 						{ deliverAs: "followUp" },
 					);
 				} else if (request.action === "new") {
@@ -218,6 +240,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 				} else {
 					approvedRevision = undefined;
 					current.write("");
+					current.clearAttachments();
 					current.update({ status: "draft", activity: "", result: "" });
 				}
 			}
@@ -294,6 +317,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 					if (shouldResetPlan) {
 						approvedRevision = undefined;
 						server.write("");
+						server.clearAttachments();
 						server.update({ status: "draft", activity: "", result: "" });
 					} else if (server.state.content.trim()) {
 						server.update({ status: "review" });

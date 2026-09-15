@@ -98,6 +98,22 @@ button { color: inherit; }
 .annotation-item .icon-button { width: 28px; height: 28px; color: var(--muted); }
 .annotation-item blockquote { display: -webkit-box; margin: 8px 0; overflow: hidden; color: var(--muted); font: 11.5px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .annotation-item p { margin: 6px 0 0; font-size: .86rem; }
+.attachment-panel { flex: 0 0 auto; border-top: 1px solid var(--border); }
+.attachment-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px 8px 17px; }
+.attachment-header h2 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: .95rem; }
+.attachment-input { display: none; }
+.attachment-dropzone { display: flex; width: calc(100% - 24px); min-height: 62px; margin: 0 12px 10px; align-items: center; justify-content: center; gap: 8px; padding: 10px; border: 1px dashed var(--border); border-radius: 9px; background: var(--panel-subtle); color: var(--muted); font-size: .78rem; cursor: pointer; }
+.attachment-dropzone:hover:not(:disabled), .attachment-dropzone.dragging { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.attachment-dropzone:disabled { cursor: default; opacity: .55; }
+.attachment-dropzone svg { width: 18px; height: 18px; }
+.attachment-list { max-height: 210px; overflow: auto; border-top: 1px solid var(--border); }
+.attachment-item { display: grid; grid-template-columns: 48px minmax(0, 1fr) 30px; align-items: center; gap: 9px; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+.attachment-item:last-child { border-bottom: 0; }
+.attachment-item img { width: 48px; height: 42px; border-radius: 6px; background: var(--panel-subtle); object-fit: cover; }
+.attachment-item strong, .attachment-item span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-item strong { font-size: .78rem; }
+.attachment-item span { color: var(--muted); font-size: .68rem; }
+.attachment-item .icon-button { width: 30px; height: 30px; color: var(--muted); }
 .activity-details { flex: 0 0 auto; padding: 10px 16px; border-top: 1px solid var(--border); color: var(--muted); }
 .activity-details summary { cursor: pointer; font-size: .78rem; font-weight: 700; }
 .annotation-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--panel-subtle); }
