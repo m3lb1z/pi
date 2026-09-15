@@ -4,6 +4,7 @@ import { AttachmentPanel } from "./attachments.jsx";
 import { IconButton } from "./buttons.jsx";
 
 export function ReviewSidebar({
+	activeTab,
 	annotations,
 	attachments,
 	busy,
@@ -12,6 +13,7 @@ export function ReviewSidebar({
 	copied,
 	onAddGlobal,
 	onCopy,
+	onChangeTab,
 	onRemove,
 	onRemoveAttachment,
 	onSelect,
@@ -21,19 +23,32 @@ export function ReviewSidebar({
 }) {
 	return (
 		<aside className="annotation-sidebar">
-			<AnnotationHeader count={annotations.length} disabled={!canSubmit || busy} onAddGlobal={onAddGlobal} />
-			<AnnotationList annotations={annotations} onRemove={onRemove} onSelect={onSelect} />
-			<AttachmentPanel attachments={attachments} busy={busy} canManage={canManageAttachments} onRemove={onRemoveAttachment} onUpload={onUploadAttachments} />
-			<AgentActivity activity={activity} />
-			<AnnotationActions busy={busy} canSubmit={canSubmit} copied={copied} count={annotations.length} onCopy={onCopy} onSubmit={onSubmit} />
+			<div className="sidebar-tabs" role="tablist" aria-label="Panel de revisión" onKeyDown={(event) => {
+				const nextTab = event.key === "ArrowRight" || event.key === "End" ? "images" : event.key === "ArrowLeft" || event.key === "Home" ? "annotations" : null;
+				if (!nextTab) return;
+				event.preventDefault();
+				onChangeTab(nextTab);
+				event.currentTarget.querySelector(`#${nextTab}-tab`)?.focus();
+			}}>
+				<button type="button" id="annotations-tab" role="tab" aria-controls="annotations-panel" aria-selected={activeTab === "annotations"} tabIndex={activeTab === "annotations" ? 0 : -1} onClick={() => onChangeTab("annotations")}>Anotaciones <span className="annotation-count">{annotations.length}</span></button>
+				<button type="button" id="images-tab" role="tab" aria-controls="images-panel" aria-selected={activeTab === "images"} tabIndex={activeTab === "images" ? 0 : -1} onClick={() => onChangeTab("images")}>Imágenes <span className="annotation-count">{attachments.length}</span></button>
+			</div>
+			<div className="sidebar-tab-panel" id="annotations-panel" role="tabpanel" aria-labelledby="annotations-tab" hidden={activeTab !== "annotations"}>
+				<AnnotationHeader disabled={!canSubmit || busy} onAddGlobal={onAddGlobal} />
+				<AnnotationList annotations={annotations} onRemove={onRemove} onSelect={onSelect} />
+				<AgentActivity activity={activity} />
+				<AnnotationActions busy={busy} canSubmit={canSubmit} copied={copied} count={annotations.length} onCopy={onCopy} onSubmit={onSubmit} />
+			</div>
+			<div className="sidebar-tab-panel" id="images-panel" role="tabpanel" aria-labelledby="images-tab" hidden={activeTab !== "images"}>
+				<AttachmentPanel attachments={attachments} busy={busy} canManage={canManageAttachments} onRemove={onRemoveAttachment} onUpload={onUploadAttachments} />
+			</div>
 		</aside>
 	);
 }
 
-function AnnotationHeader({ count, disabled, onAddGlobal }) {
+function AnnotationHeader({ disabled, onAddGlobal }) {
 	return (
-		<div className="annotation-header">
-			<h2>Anotaciones <span className="annotation-count">{count}</span></h2>
+		<div className="sidebar-panel-toolbar">
 			<IconButton disabled={disabled} label="Agregar cambio general" onClick={onAddGlobal}><Plus /></IconButton>
 		</div>
 	);

@@ -15,6 +15,7 @@ function App() {
 	const [showDiscardConfirmation, setShowDiscardConfirmation] = useState(false);
 	const [showGlobalAnnotation, setShowGlobalAnnotation] = useState(false);
 	const [annotations, setAnnotations] = useState([]);
+	const [sidebarTab, setSidebarTab] = useState("annotations");
 	const [pendingSelection, setPendingSelection] = useState(null);
 	const [commentSelection, setCommentSelection] = useState(null);
 	const [editorSelection, setEditorSelection] = useState(null);
@@ -74,6 +75,7 @@ function App() {
 	const clearNativeSelection = () => window.getSelection()?.removeAllRanges();
 	const addAnnotation = (selection, type, comment = "") => {
 		setAnnotations((current) => [...current, { ...selection, id: crypto.randomUUID(), type, comment }]);
+		setSidebarTab("annotations");
 		setPendingSelection(null);
 		setCommentSelection(null);
 		clearNativeSelection();
@@ -99,6 +101,7 @@ function App() {
 	};
 	const uploadAttachments = async (files) => {
 		if (busy || files.length === 0) return;
+		setSidebarTab("images");
 		setBusy(true);
 		setError("");
 		try {
@@ -170,6 +173,7 @@ function App() {
 					selection={pendingSelection}
 				/>
 				<ReviewSidebar
+					activeTab={sidebarTab}
 					annotations={annotations}
 					attachments={state?.attachments || []}
 					activity={activity}
@@ -178,6 +182,7 @@ function App() {
 					canSubmit={Boolean(connected && idle)}
 					copied={copied}
 					onAddGlobal={() => setShowGlobalAnnotation(true)}
+					onChangeTab={setSidebarTab}
 					onCopy={copyAnnotations}
 					onRemove={(id) => setAnnotations((current) => current.filter((annotation) => annotation.id !== id))}
 					onRemoveAttachment={removeAttachment}
@@ -192,6 +197,7 @@ function App() {
 				idle={idle}
 				onAddGlobal={(comment) => {
 					setAnnotations((current) => [...current, { id: crypto.randomUUID(), type: "global", comment }]);
+					setSidebarTab("annotations");
 					setShowGlobalAnnotation(false);
 				}}
 				onCancelComment={() => setCommentSelection(null)}

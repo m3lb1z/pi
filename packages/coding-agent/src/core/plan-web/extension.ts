@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.ts";
 import { PlanModeSelectorComponent } from "../../modes/interactive/components/plan-mode-selector.ts";
+import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { stripBom } from "../../utils/text.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "../defaults.ts";
 import type { ExtensionAPI, ExtensionContext } from "../extensions/types.ts";
@@ -16,6 +18,7 @@ import {
 	restoreLineEndings,
 } from "../tools/edit-diff.ts";
 import { createGrepToolDefinition } from "../tools/grep.ts";
+import { resolveReadPath } from "../tools/path-utils.ts";
 import { buildPlannerPrompt } from "./prompts.ts";
 import { type PlanAction, PlanServer } from "./server.ts";
 
@@ -30,6 +33,9 @@ const PLAN_DOCUMENT_TOOLS = ["edit_plan", "write_plan"];
 const PLAN_EXTENSION_TOOLS = ["ripgrep", ...PLAN_DOCUMENT_TOOLS];
 const PLANNER_TOOLS = ["read", ...PLAN_DOCUMENT_TOOLS];
 const PLANNER_INSPECTION_TOOLS = ["ripgrep", ...PLANNER_TOOLS];
+// CLI @file arguments become <file name="...">; /plan instructions can also name paths directly.
+const IMAGE_REFERENCE_PATTERN = /<file name="([^"]+)">|(?:^|\s)@(?:"([^"]+)"|'([^']+)'|([^\s]+))/g;
+const ABSOLUTE_IMAGE_PATH_PATTERN = /(?:^|\s)(?:"((?:[a-z]:[\\/]|\/|\\\\)[^"]+\.(?:png|jpe?g|gif|webp|bmp))"|((?:[a-z]:[\\/]|\/|\\\\)[^\s"'<>]+\.(?:png|jpe?g|gif|webp|bmp)))/gi;
 
 export interface PlanExtensionOptions {
 	directory?: string;
@@ -75,6 +81,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 	let actionPending = false;
 	let workflowDefaultModel: Model<Api> | undefined;
 	let inspectionAllowed = false;
+	const importedImagePaths = new Map<string, string>();
 
 	function readConfig(): ModeConfig {
 		try {
@@ -149,15 +156,42 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		return existsSync(promptPath) ? stripBom(readFileSync(promptPath, "utf8")) : undefined;
 	}
 
-	function startNewPlan(task: string, ctx: ExtensionContext, current: PlanServer): void {
+	async function importInstructionImages(task: string, cwd: string, current: PlanServer): Promise<void> {
+		const references = [
+			...task.matchAll(IMAGE_REFERENCE_PATTERN),
+			...task.matchAll(ABSOLUTE_IMAGE_PATH_PATTERN),
+		];
+		for (const match of references) {
+			const referencedPath = match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5] ?? match[6];
+			if (!referencedPath) continue;
+			const normalizedReference = match[4] ? referencedPath.replace(/[),.;!?]+$/, "") : referencedPath;
+			if (match[1] === undefined && !/\.(?:png|jpe?g|gif|webp|bmp)$/i.test(normalizedReference)) continue;
+			const absolutePath = realpathSync(resolveReadPath(normalizedReference, cwd));
+			const existingId = importedImagePaths.get(absolutePath);
+			if (existingId && current.state.attachments.some((attachment) => attachment.id === existingId)) continue;
+			if (!(await detectSupportedImageMimeTypeFromFile(absolutePath))) continue;
+			const fileStats = await stat(absolutePath);
+			if (fileStats.size === 0 || fileStats.size > 20 * 1024 * 1024)
+				throw new Error(`Plan image must be between 1 byte and 20 MiB: ${absolutePath}`);
+			const attachment = await current.addAttachment(basename(absolutePath), await readFile(absolutePath));
+			importedImagePaths.set(absolutePath, attachment.id);
+		}
+	}
+
+	async function startNewPlan(task: string, ctx: ExtensionContext, current: PlanServer): Promise<void> {
 		approvedRevision = undefined;
 		lastAssistantText = "";
 		current.clearAttachments();
+		importedImagePaths.clear();
 		current.update({ status: "planning", result: "", activity: "" });
 		current.write("");
+		await importInstructionImages(task, ctx.cwd, current);
 		configurePlannerInspection(task);
 		pi.sendUserMessage(
-			`Create the planning document ${current.path} for this task in ${ctx.cwd}:\n${task.trim()}\n\nThe deliverable is the plan document, not code. Do not explore the repository broadly. Use read when a specific file is required to understand the task; an explicit file mention identifies content the user expects you to inspect. Only when the task contains an explicit file mention may you use ripgrep for a narrow keyword search. Save the initial whole draft with write_plan; once the plan has content, use edit_plan with one or more oldText/newText replacements for focused changes. Describe the objective, scope, decisions, steps, validation, and open questions. Verify the resulting text from context and respond with a short summary.`,
+			attachPlanImages(
+				`Create the planning document ${current.path} for this task in ${ctx.cwd}:\n${task.trim()}\n\nThe deliverable is the plan document, not code. Do not explore the repository broadly. Use read when a specific file is required to understand the task; an explicit file mention identifies content the user expects you to inspect. Only when the task contains an explicit file mention may you use ripgrep for a narrow keyword search. Save the initial whole draft with write_plan; once the plan has content, use edit_plan with one or more oldText/newText replacements for focused changes. Describe the objective, scope, decisions, steps, validation, and open questions. Verify the resulting text from context and respond with a short summary.`,
+				current,
+			),
 			{ deliverAs: "followUp" },
 		);
 	}
@@ -238,11 +272,12 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 						{ deliverAs: "followUp" },
 					);
 				} else if (request.action === "new") {
-					startNewPlan(request.feedback, ctx, current);
+					await startNewPlan(request.feedback, ctx, current);
 				} else {
 					approvedRevision = undefined;
 					current.write("");
 					current.clearAttachments();
+					importedImagePaths.clear();
 					current.update({ status: "draft", activity: "", result: "" });
 				}
 			}
@@ -310,7 +345,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 					workflowDefaultModel = ctx.model;
 					await selectModel("planner", ctx);
 					activate("planner");
-					startNewPlan(args, ctx, server);
+					await startNewPlan(args, ctx, server);
 				} else if (!mode || server.state.status === "completed") {
 					const shouldResetPlan = server.state.status === "completed";
 					workflowDefaultModel ??= ctx.model;
@@ -320,6 +355,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 						approvedRevision = undefined;
 						server.write("");
 						server.clearAttachments();
+						importedImagePaths.clear();
 						server.update({ status: "draft", activity: "", result: "" });
 					} else if (server.state.content.trim()) {
 						server.update({ status: "review" });
@@ -333,6 +369,15 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 				commandPending = false;
 			}
 		},
+	});
+	pi.on("input", async (event, ctx) => {
+		if (!server || mode !== "planner" || event.source === "extension" || ctx.sessionManager.getSessionId() !== owner)
+			return;
+		try {
+			await importInstructionImages(event.text, ctx.cwd, server);
+		} catch (error) {
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+		}
 	});
 
 	const cwd = process.cwd();
@@ -508,6 +553,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		owner = undefined;
 		approvedRevision = undefined;
 		inspectionAllowed = false;
+		importedImagePaths.clear();
 		workflowDefaultModel = undefined;
 		if (savedTools) pi.setActiveTools(savedTools);
 		savedTools = undefined;

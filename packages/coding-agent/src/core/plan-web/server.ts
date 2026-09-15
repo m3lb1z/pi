@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { getPlanWebAssetsDir } from "../../config.ts";
 import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeType } from "../../utils/mime.ts";
+import { openBrowser } from "../../utils/open-browser.ts";
 import { planPage } from "./page.ts";
 
 export type PlanStatus =
@@ -126,6 +127,7 @@ export class PlanServer {
 			await this.close();
 			throw error;
 		}
+		openBrowser(this.url);
 	}
 
 	private fileChanged = (): void => {
@@ -199,7 +201,7 @@ export class PlanServer {
 		renameSync(temporary, this.attachmentManifestPath);
 	}
 
-	async addAttachment(name: string, bytes: Uint8Array): Promise<void> {
+	async addAttachment(name: string, bytes: Uint8Array): Promise<PlanAttachment> {
 		if (this.closed) throw new Error("Plan session is closed.");
 		if (!name || name.length > 255 || /[\u0000-\u001f\u007f]/.test(name)) throw new Error("Invalid image name.");
 		if (this.state.attachments.length >= MAX_ATTACHMENTS)
@@ -231,6 +233,7 @@ export class PlanServer {
 		}
 		this.refresh();
 		if (previousStatus === "review") this.update({ status: "review" });
+		return attachment;
 	}
 
 	removeAttachment(id: string): void {

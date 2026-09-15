@@ -34,7 +34,7 @@ export function AttachmentPanel({ attachments, busy, canManage, onRemove, onUplo
 
 	return (
 		<section className="attachment-panel">
-			<AttachmentHeader count={attachments.length} disabled={!canManage || busy} input={input} onSelect={submitFiles} />
+			<AttachmentHeader disabled={!canManage || busy} input={input} onSelect={submitFiles} />
 			<AttachmentDropzone
 				disabled={!canManage || busy}
 				dragging={dragging}
@@ -47,10 +47,9 @@ export function AttachmentPanel({ attachments, busy, canManage, onRemove, onUplo
 	);
 }
 
-function AttachmentHeader({ count, disabled, input, onSelect }) {
+function AttachmentHeader({ disabled, input, onSelect }) {
 	return (
-		<div className="attachment-header">
-			<h2>Imágenes <span className="annotation-count">{count}</span></h2>
+		<div className="sidebar-panel-toolbar">
 			<IconButton disabled={disabled} label="Agregar imágenes" onClick={() => input.current?.click()}><ImagePlus /></IconButton>
 			<input
 				ref={input}
