@@ -109,14 +109,26 @@ button { color: inherit; }
 .attachment-dropzone:hover:not(:disabled), .attachment-dropzone.dragging { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .attachment-dropzone:disabled { cursor: default; opacity: .55; }
 .attachment-dropzone svg { width: 18px; height: 18px; }
-.attachment-list { flex: 1; overflow: auto; border-top: 1px solid var(--border); }
-.attachment-item { display: grid; grid-template-columns: 48px minmax(0, 1fr) 30px; align-items: center; gap: 9px; padding: 9px 12px; border-bottom: 1px solid var(--border); }
-.attachment-item:last-child { border-bottom: 0; }
-.attachment-item img { width: 48px; height: 42px; border-radius: 6px; background: var(--panel-subtle); object-fit: cover; }
+.attachment-list { flex: 1; overflow: auto; border-top: 1px solid var(--border); padding: 12px; }
+.attachment-item { margin-bottom: 12px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); box-shadow: 0 2px 8px #0f172a0a; }
+.attachment-item > img { display: block; width: 100%; height: auto; background: var(--panel-subtle); }
+.attachment-item-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto 30px; align-items: center; column-gap: 4px; padding: 8px; border-top: 1px solid var(--border); }
+.attachment-item-footer > span { grid-column: 1 / -1; }
 .attachment-item strong, .attachment-item span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-item strong { font-size: .78rem; }
 .attachment-item span { color: var(--muted); font-size: .68rem; }
+.attachment-show { display: inline-flex; align-items: center; gap: 4px; padding: 5px; border: 0; border-radius: 7px; background: transparent; color: var(--accent); font-size: .75rem; font-weight: 700; cursor: pointer; }
+.attachment-show:hover { background: var(--accent-soft); }
+.attachment-show:focus-visible { outline: 3px solid #3b82f655; outline-offset: 2px; }
+.attachment-show svg { width: 16px; height: 16px; }
 .attachment-item .icon-button { width: 30px; height: 30px; color: var(--muted); }
+.attachment-lightbox { position: fixed; inset: 0; z-index: 120; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 64px 24px 24px; background: #020617e6; color: #fff; }
+.attachment-lightbox-close { position: absolute; top: 16px; right: 16px; display: grid; width: 40px; height: 40px; place-items: center; padding: 0; border: 1px solid #ffffff55; border-radius: 50%; background: #ffffff1a; color: #fff; cursor: pointer; }
+.attachment-lightbox-close:hover { background: #ffffff33; }
+.attachment-lightbox-close:focus-visible { outline: 3px solid #93c5fd; outline-offset: 2px; }
+.attachment-lightbox-close svg { width: 20px; height: 20px; }
+.attachment-lightbox > img { display: block; max-width: 100%; max-height: calc(100vh - 140px); width: auto; height: auto; object-fit: contain; box-shadow: 0 20px 60px #0008; }
+.attachment-lightbox-caption { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .85rem; }
 .activity-details { flex: 0 0 auto; padding: 10px 16px; border-top: 1px solid var(--border); color: var(--muted); }
 .activity-details summary { cursor: pointer; font-size: .78rem; font-weight: 700; }
 .annotation-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--panel-subtle); }

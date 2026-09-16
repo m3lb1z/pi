@@ -1,11 +1,14 @@
-import { ImagePlus, X } from "lucide-react";
+import { Eye, ImagePlus, X } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { IconButton } from "./buttons.jsx";
 import { planToken } from "./plan-token.js";
 
 export function AttachmentPanel({ attachments, busy, canManage, onRemove, onUpload }) {
 	const input = useRef(null);
 	const [dragging, setDragging] = useState(false);
+	const [previewId, setPreviewId] = useState(null);
+	const previewAttachment = attachments.find((attachment) => attachment.id === previewId);
 	const submitFiles = (files) => {
 		const selected = [...files];
 		if (selected.length > 0) onUpload(selected);
@@ -42,7 +45,8 @@ export function AttachmentPanel({ attachments, busy, canManage, onRemove, onUplo
 				onOpen={() => input.current?.click()}
 				onSelect={submitFiles}
 			/>
-			<AttachmentList attachments={attachments} disabled={!canManage || busy} onRemove={onRemove} />
+			<AttachmentList attachments={attachments} disabled={!canManage || busy} onPreview={setPreviewId} onRemove={onRemove} />
+			{previewAttachment && <AttachmentLightbox attachment={previewAttachment} onClose={() => setPreviewId(null)} />}
 		</section>
 	);
 }
@@ -88,26 +92,39 @@ function AttachmentDropzone({ disabled, dragging, onDraggingChange, onOpen, onSe
 	);
 }
 
-function AttachmentList({ attachments, disabled, onRemove }) {
+function AttachmentList({ attachments, disabled, onPreview, onRemove }) {
 	if (attachments.length === 0) return null;
 	return (
 		<div className="attachment-list">
 			{attachments.map((attachment, index) => (
-				<AttachmentItem attachment={attachment} disabled={disabled} index={index} key={attachment.id} onRemove={onRemove} />
+				<AttachmentItem attachment={attachment} disabled={disabled} index={index} key={attachment.id} onPreview={onPreview} onRemove={onRemove} />
 			))}
 		</div>
 	);
 }
 
-function AttachmentItem({ attachment, disabled, index, onRemove }) {
+function AttachmentItem({ attachment, disabled, index, onPreview, onRemove }) {
+	const src = `/attachments/${attachment.id}?token=${encodeURIComponent(planToken)}`;
 	return (
 		<article className="attachment-item">
-			<img src={`/attachments/${attachment.id}?token=${encodeURIComponent(planToken)}`} alt={`Anexo ${index + 1}: ${attachment.name}`} />
-			<div>
-				<strong>{attachment.name}</strong>
+			<img src={src} alt={`Anexo ${index + 1}: ${attachment.name}`} />
+			<div className="attachment-item-footer">
+				<strong title={attachment.name}>{attachment.name}</strong>
+				<button type="button" className="attachment-show" onClick={() => onPreview(attachment.id)}><Eye aria-hidden="true" />Mostrar</button>
+				<IconButton disabled={disabled} label={`Eliminar ${attachment.name}`} onClick={() => onRemove(attachment.id)}><X /></IconButton>
 				<span>Anexo {index + 1} · {(attachment.size / 1024).toFixed(0)} KiB</span>
 			</div>
-			<IconButton disabled={disabled} label={`Eliminar ${attachment.name}`} onClick={() => onRemove(attachment.id)}><X /></IconButton>
 		</article>
+	);
+}
+
+function AttachmentLightbox({ attachment, onClose }) {
+	return createPortal(
+		<div className="attachment-lightbox" role="dialog" aria-modal="true" aria-label={`Ver ${attachment.name}`} onMouseDown={(event) => event.target === event.currentTarget && onClose()} onKeyDown={(event) => event.key === "Escape" && onClose()}>
+			<button type="button" className="attachment-lightbox-close" autoFocus aria-label="Cerrar imagen" onClick={onClose}><X aria-hidden="true" /></button>
+			<img src={`/attachments/${attachment.id}?token=${encodeURIComponent(planToken)}`} alt={attachment.name} />
+			<span className="attachment-lightbox-caption">{attachment.name}</span>
+		</div>,
+		document.body,
 	);
 }
