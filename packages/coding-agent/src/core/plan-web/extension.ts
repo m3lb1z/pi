@@ -265,10 +265,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 					current.update({ status: "planning", result: "", activity: "" });
 					configurePlannerInspection(request.feedback);
 					pi.sendUserMessage(
-						attachPlanImages(
-							`The current plan is already in context. Apply these observations to it using edit_plan. Change only the affected passages, preserve unrelated text, and verify the resulting plan logically. Do not implement code or repeat the complete plan in the conversation.\n\n${request.feedback}`,
-							current,
-						),
+						`The current plan is already in context. Apply these observations to it using edit_plan. Change only the affected passages, preserve unrelated text, and verify the resulting plan logically. Do not implement code or repeat the complete plan in the conversation.\n\n${request.feedback}`,
 						{ deliverAs: "followUp" },
 					);
 				} else if (request.action === "new") {
