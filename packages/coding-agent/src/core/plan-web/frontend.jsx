@@ -21,6 +21,7 @@ function App() {
 	const [editorSelection, setEditorSelection] = useState(null);
 	const [copied, setCopied] = useState(false);
 	const planContent = state?.content;
+	const editable = Boolean(state && state.activePlanner === state.viewedPlanner);
 
 	useEffect(() => {
 		const events = new EventSource(`/events?token=${encodeURIComponent(planToken)}`);
@@ -46,10 +47,10 @@ function App() {
 		setEditorSelection(null);
 		setShowDiscardConfirmation(false);
 		setShowGlobalAnnotation(false);
-	}, [planContent]);
+	}, [planContent, state?.viewedPlanner]);
 
 	const action = async (actionName, feedback = "") => {
-		if (!state || busy) return;
+		if (!state || busy || !editable) return;
 		setBusy(true);
 		setError("");
 		try {
@@ -64,6 +65,24 @@ function App() {
 		} catch (actionError) {
 			setError(actionError instanceof Error ? actionError.message : String(actionError));
 			return false;
+		} finally {
+			setBusy(false);
+		}
+	};
+	const viewPlanner = async (planner) => {
+		if (!state || busy || planner === state.viewedPlanner) return;
+		setBusy(true);
+		setError("");
+		try {
+			const response = await fetch("/view", {
+				method: "POST",
+				headers: { "Content-Type": "application/json", "X-Plan-Token": planToken },
+				body: JSON.stringify({ planner }),
+			});
+			const result = await response.json();
+			if (!response.ok) throw new Error(result.error);
+		} catch (viewError) {
+			setError(viewError instanceof Error ? viewError.message : String(viewError));
 		} finally {
 			setBusy(false);
 		}
@@ -148,14 +167,19 @@ function App() {
 	return (
 		<div className="app-shell">
 			<PlanHeader
+				activePlanner={state?.activePlanner}
 				busy={busy}
 				connected={connected}
+				editable={editable}
 				hasPlan={hasPlan}
 				idle={idle}
 				onApprove={() => action("approve")}
 				onDiscard={() => setShowDiscardConfirmation(true)}
 				onEdit={() => setEditorSelection({ line: 1, text: "" })}
+				onView={viewPlanner}
+				planners={state?.planners || []}
 				status={state?.status}
+				viewedPlanner={state?.viewedPlanner}
 			/>
 			<ErrorBanner error={error} />
 			<main className="review-layout">
@@ -164,7 +188,7 @@ function App() {
 					busy={busy}
 					content={state?.content || ""}
 					editorSelection={editorSelection}
-					idle={idle}
+					idle={idle && editable}
 					onCancelEdit={() => setEditorSelection(null)}
 					onSave={async (content) => {
 						if (await action("save", content)) setEditorSelection(null);
@@ -178,8 +202,8 @@ function App() {
 					attachments={state?.attachments || []}
 					activity={activity}
 					busy={busy}
-					canManageAttachments={canManageAttachments}
-					canSubmit={Boolean(connected && idle)}
+					canManageAttachments={canManageAttachments && editable}
+					canSubmit={Boolean(connected && idle && editable)}
 					copied={copied}
 					onAddGlobal={() => setShowGlobalAnnotation(true)}
 					onChangeTab={setSidebarTab}
@@ -194,7 +218,7 @@ function App() {
 			<PlanOverlays
 				busy={busy}
 				commentSelection={commentSelection}
-				idle={idle}
+				idle={idle && editable}
 				onAddGlobal={(comment) => {
 					setAnnotations((current) => [...current, { id: crypto.randomUUID(), type: "global", comment }]);
 					setSidebarTab("annotations");

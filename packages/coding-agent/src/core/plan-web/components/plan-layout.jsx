@@ -15,14 +15,20 @@ const labels = {
 	failed: "Fallido",
 };
 
-export function PlanHeader({ busy, connected, hasPlan, idle, onApprove, onDiscard, onEdit, status }) {
+export function PlanHeader({ activePlanner, busy, connected, editable, hasPlan, idle, onApprove, onDiscard, onEdit, onView, planners, status, viewedPlanner }) {
 	return (
 		<header className="navbar">
 			<h1>Pi Planning</h1>
+			<label className="planner-selector">
+				<span>Plano</span>
+				<select disabled={busy || !connected} value={viewedPlanner || "general"} onChange={(event) => onView(event.target.value)}>
+					{planners.map((planner) => <option key={planner.name} value={planner.name}>{planner.name}{planner.name === activePlanner ? " (activo)" : ""}</option>)}
+				</select>
+			</label>
 			<nav className="navbar-actions" aria-label="Acciones del plan">
-				<ActionButton disabled={busy || !connected || !idle || !hasPlan} icon={SquarePen} label="Editar" onClick={onEdit} />
-				<ActionButton className="primary" disabled={busy || !connected || status !== "review"} icon={Check} label="Aprobar" onClick={onApprove} />
-				<ActionButton className="danger" disabled={busy || !connected || !idle || !hasPlan} icon={Trash2} label="Descartar" onClick={onDiscard} />
+				<ActionButton disabled={busy || !connected || !editable || !idle || !hasPlan} icon={SquarePen} label="Editar" onClick={onEdit} />
+				<ActionButton className="primary" disabled={busy || !connected || !editable || status !== "review"} icon={Check} label="Aprobar" onClick={onApprove} />
+				<ActionButton className="danger" disabled={busy || !connected || !editable || !idle || !hasPlan} icon={Trash2} label="Descartar" onClick={onDiscard} />
 			</nav>
 			<div className="status-group">
 				<span className="status" data-connected={connected}>

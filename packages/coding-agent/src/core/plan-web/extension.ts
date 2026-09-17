@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
@@ -19,6 +19,7 @@ import {
 } from "../tools/edit-diff.ts";
 import { createGrepToolDefinition } from "../tools/grep.ts";
 import { resolveReadPath } from "../tools/path-utils.ts";
+import { type PlannerTemplate, readPlannerTemplate } from "./planner-templates.ts";
 import { buildPlannerPrompt } from "./prompts.ts";
 import { type PlanAction, PlanServer } from "./server.ts";
 
@@ -35,34 +36,17 @@ const PLANNER_TOOLS = ["read", ...PLAN_DOCUMENT_TOOLS];
 const PLANNER_INSPECTION_TOOLS = ["ripgrep", ...PLANNER_TOOLS];
 // CLI @file arguments become <file name="...">; /plan instructions can also name paths directly.
 const IMAGE_REFERENCE_PATTERN = /<file name="([^"]+)">|(?:^|\s)@(?:"([^"]+)"|'([^']+)'|([^\s]+))/g;
-const ABSOLUTE_IMAGE_PATH_PATTERN = /(?:^|\s)(?:"((?:[a-z]:[\\/]|\/|\\\\)[^"]+\.(?:png|jpe?g|gif|webp|bmp))"|((?:[a-z]:[\\/]|\/|\\\\)[^\s"'<>]+\.(?:png|jpe?g|gif|webp|bmp)))/gi;
+const ABSOLUTE_IMAGE_PATH_PATTERN =
+	/(?:^|\s)(?:"((?:[a-z]:[\\/]|\/|\\\\)[^"]+\.(?:png|jpe?g|gif|webp|bmp))"|((?:[a-z]:[\\/]|\/|\\\\)[^\s"'<>]+\.(?:png|jpe?g|gif|webp|bmp)))/gi;
 
 export interface PlanExtensionOptions {
 	directory?: string;
 	port?: number;
 }
 
-export function getProjectPlanPath(directory: string, project: string): string {
+export function getProjectPlanDirectory(directory: string, project: string): string {
 	const projectId = createHash("sha256").update(project).digest("hex").slice(0, 16);
-	return join(directory, "plans", `${projectId}.md`);
-}
-
-function migrateLegacyPlan(directory: string): void {
-	const legacyPath = join(directory, "plan_current.md");
-	if (!existsSync(legacyPath)) return;
-	const firstLine = readFileSync(legacyPath, "utf8").split("\n", 1)[0];
-	const prefix = "<!-- pi-plan-project: ";
-	if (!firstLine.startsWith(prefix) || !firstLine.endsWith(" -->")) return;
-	try {
-		const project: unknown = JSON.parse(firstLine.slice(prefix.length, -4));
-		if (typeof project !== "string") return;
-		const destination = getProjectPlanPath(directory, project);
-		if (existsSync(destination)) return;
-		mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
-		renameSync(legacyPath, destination);
-	} catch {
-		// Leave malformed or inaccessible legacy plans untouched.
-	}
+	return join(directory, "plans", projectId);
 }
 
 export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions = {}): void {
@@ -81,6 +65,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 	let actionPending = false;
 	let workflowDefaultModel: Model<Api> | undefined;
 	let inspectionAllowed = false;
+	let plannerTemplate: PlannerTemplate | undefined;
 	const importedImagePaths = new Map<string, string>();
 
 	function readConfig(): ModeConfig {
@@ -141,7 +126,10 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		savedTools ??= pi.getActiveTools().filter((name) => !PLAN_EXTENSION_TOOLS.includes(name));
 		mode = next;
 		pi.setActiveTools(next === "planner" ? PLANNER_TOOLS : savedTools);
-		context?.ui.setStatus("plan-web", `${next} · ${server ? new URL(server.url).host : "localhost:7337"}`);
+		context?.ui.setStatus(
+			"plan-web",
+			`${next}${server ? `:${server.state.activePlanner}` : ""} · ${server ? new URL(server.url).host : "localhost:7337"}`,
+		);
 	}
 
 	function configurePlannerInspection(prompt: string): void {
@@ -157,10 +145,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 	}
 
 	async function importInstructionImages(task: string, cwd: string, current: PlanServer): Promise<void> {
-		const references = [
-			...task.matchAll(IMAGE_REFERENCE_PATTERN),
-			...task.matchAll(ABSOLUTE_IMAGE_PATH_PATTERN),
-		];
+		const references = [...task.matchAll(IMAGE_REFERENCE_PATTERN), ...task.matchAll(ABSOLUTE_IMAGE_PATH_PATTERN)];
 		for (const match of references) {
 			const referencedPath = match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5] ?? match[6];
 			if (!referencedPath) continue;
@@ -168,7 +153,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 			if (match[1] === undefined && !/\.(?:png|jpe?g|gif|webp|bmp)$/i.test(normalizedReference)) continue;
 			const absolutePath = realpathSync(resolveReadPath(normalizedReference, cwd));
 			const existingId = importedImagePaths.get(absolutePath);
-			if (existingId && current.state.attachments.some((attachment) => attachment.id === existingId)) continue;
+			if (existingId && current.readActiveAttachments().some((attachment) => attachment.id === existingId)) continue;
 			if (!(await detectSupportedImageMimeTypeFromFile(absolutePath))) continue;
 			const fileStats = await stat(absolutePath);
 			if (fileStats.size === 0 || fileStats.size > 20 * 1024 * 1024)
@@ -178,28 +163,11 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		}
 	}
 
-	async function startNewPlan(task: string, ctx: ExtensionContext, current: PlanServer): Promise<void> {
-		approvedRevision = undefined;
-		lastAssistantText = "";
-		current.clearAttachments();
-		importedImagePaths.clear();
-		current.update({ status: "planning", result: "", activity: "" });
-		current.write("");
-		await importInstructionImages(task, ctx.cwd, current);
-		configurePlannerInspection(task);
-		pi.sendUserMessage(
-			attachPlanImages(
-				`Create the planning document ${current.path} for this task in ${ctx.cwd}:\n${task.trim()}\n\nThe deliverable is the plan document, not code. Do not explore the repository broadly. Use read when a specific file is required to understand the task; an explicit file mention identifies content the user expects you to inspect. Only when the task contains an explicit file mention may you use ripgrep for a narrow keyword search. Save the initial whole draft with write_plan; once the plan has content, use edit_plan with one or more oldText/newText replacements for focused changes. Describe the objective, scope, decisions, steps, validation, and open questions. Verify the resulting text from context and respond with a short summary.`,
-				current,
-			),
-			{ deliverAs: "followUp" },
-		);
-	}
-
 	function attachPlanImages(text: string, current: PlanServer): string | Array<TextContent | ImageContent> {
 		const images = current.readAttachmentContent();
 		if (images.length === 0) return text;
-		const annex = current.state.attachments
+		const annex = current
+			.readActiveAttachments()
 			.map((attachment, index) => `${index + 1}. [Image ${index + 1}] ${attachment.name}`)
 			.join("\n");
 		return [
@@ -221,19 +189,23 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 			if (request.action === "approve") {
 				current.update({ status: "approving" });
 				try {
+					const allPlans = current.readAllPlans();
+					const approvedPlans = allPlans.filter((plan) => plan.content.trim());
+					const workspaceRevision = current.workspaceRevision(allPlans);
 					await selectModel("programming", ctx);
 					requireOwner();
 					current.assertRevision(request.revision);
+					current.assertWorkspaceRevision(workspaceRevision);
 					if (server !== current || !ctx.isIdle() || ctx.hasPendingMessages())
 						throw new Error("Session changed or Pi became busy. Review again.");
 					pi.clearContext();
 					activate("programming");
-					approvedRevision = request.revision;
+					approvedRevision = workspaceRevision;
 					lastAssistantText = "";
 					current.update({ status: "executing", activity: "", result: "" });
 					pi.sendUserMessage(
 						attachPlanImages(
-							`Implement the approved plan below in ${ctx.cwd}. Complete its validation and report the result. If the scope must change, stop and explain why.\n\n${current.state.content}`,
+							`Implement the approved planning artifacts below in ${ctx.cwd}. Complete their validation and report the result. If the scope must change, stop and explain why.\n\n${approvedPlans.map((plan) => `## ${plan.name}\n\n${plan.content}`).join("\n\n")}`,
 							current,
 						),
 						{ deliverAs: "followUp" },
@@ -245,7 +217,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 				}
 			} else if (request.action === "save") {
 				current.assertRevision(request.revision);
-				const original = current.state.content;
+				const original = current.readActiveContent();
 				approvedRevision = undefined;
 				activate("planner");
 				current.write(restoreLineEndings(request.feedback, detectLineEnding(original)));
@@ -268,8 +240,6 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 						`The current plan is already in context. Apply these observations to it using edit_plan. Change only the affected passages, preserve unrelated text, and verify the resulting plan logically. Do not implement code or repeat the complete plan in the conversation.\n\n${request.feedback}`,
 						{ deliverAs: "followUp" },
 					);
-				} else if (request.action === "new") {
-					await startNewPlan(request.feedback, ctx, current);
 				} else {
 					approvedRevision = undefined;
 					current.write("");
@@ -319,46 +289,34 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 	});
 
 	pi.registerCommand("plan", {
-		description: "Plan a task and approve it at localhost:7337: /plan [task]",
+		description: "Activate a planning artifact at localhost:7337: /plan [planner]",
 		async handler(args, ctx) {
 			if (commandPending || actionPending) return;
 			commandPending = true;
 			let created: PlanServer | undefined;
 			try {
+				const plannerName = args.trim() || "general";
+				if (/\s/.test(plannerName)) throw new Error("/plan accepts only one planner name, for example /plan uml.");
 				if (!ctx.isIdle() || ctx.hasPendingMessages())
 					throw new Error("Wait for Pi to finish before opening a plan.");
-				if (args.trim() && server && ["planning", "approving", "executing"].includes(server.state.status))
+				if (server && ["planning", "approving", "executing"].includes(server.state.status))
 					throw new Error("The current plan is still active.");
+				const selectedTemplate = readPlannerTemplate(plannerName, ctx, directory);
 				context = ctx;
 				owner = ctx.sessionManager.getSessionId();
 				if (!server) {
 					const project = realpathSync(ctx.cwd);
-					migrateLegacyPlan(directory);
-					created = new PlanServer(getProjectPlanPath(directory, project), project, action);
-					await created.start(options.port, Boolean(args.trim()));
+					created = new PlanServer(getProjectPlanDirectory(directory, project), project, plannerName, action);
+					await created.start(options.port);
 					server = created;
 				}
-				if (args.trim()) {
-					workflowDefaultModel = ctx.model;
-					await selectModel("planner", ctx);
-					activate("planner");
-					await startNewPlan(args, ctx, server);
-				} else if (!mode || server.state.status === "completed") {
-					const shouldResetPlan = server.state.status === "completed";
-					workflowDefaultModel ??= ctx.model;
-					await selectModel("planner", ctx);
-					activate("planner");
-					if (shouldResetPlan) {
-						approvedRevision = undefined;
-						server.write("");
-						server.clearAttachments();
-						importedImagePaths.clear();
-						server.update({ status: "draft", activity: "", result: "" });
-					} else if (server.state.content.trim()) {
-						server.update({ status: "review" });
-					}
-				}
-				ctx.ui.notify(`Plan: ${server.url}`);
+				workflowDefaultModel ??= ctx.model;
+				await selectModel("planner", ctx);
+				plannerTemplate = selectedTemplate;
+				server.activatePlanner(plannerName);
+				importedImagePaths.clear();
+				activate("planner");
+				ctx.ui.notify(`Plan ${plannerName}: ${server.url}`);
 			} catch (error) {
 				if (created && server === created) await cleanup();
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
@@ -381,9 +339,9 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 	pi.registerTool({ ...createGrepToolDefinition(cwd), name: "ripgrep", label: "ripgrep" });
 	pi.registerTool({
 		name: "edit_plan",
-		label: "Edit plan_current.md",
+		label: "Edit active planning artifact",
 		description:
-			"Revise a nonempty plan_current.md with one or more targeted oldText/newText replacements. Every oldText must identify a unique, non-overlapping region of the original plan. All replacements are validated and applied atomically. This edits a planning document, never source code.",
+			"Revise the nonempty active planning artifact with one or more targeted oldText/newText replacements. Every oldText must identify a unique, non-overlapping region of the original plan. All replacements are validated and applied atomically. Read-only planning artifacts cannot be edited.",
 		parameters: Type.Object({
 			edits: Type.Array(
 				Type.Object({
@@ -405,7 +363,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 				throw new Error("Plan editing requires active planner mode.");
 			const current = server;
 			current.refresh();
-			const original = current.state.content;
+			const original = current.readActiveContent();
 			if (!original.trim()) throw new Error("The plan is empty. Create the whole document with write_plan first.");
 			const { newContent } = applyEditsToNormalizedContent(normalizeToLF(original), input.edits, current.path);
 			current.write(restoreLineEndings(newContent, detectLineEnding(original)));
@@ -425,7 +383,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		name: "write_plan",
 		label: "Write current plan",
 		description:
-			"Create the first draft of plan_current.md. For changes to an existing plan, use edit_plan instead. Replacing a nonempty plan requires replaceExisting and an explicit user request for a complete rewrite.",
+			"Create the first draft of the active planning artifact. For changes to an existing artifact, use edit_plan instead. Read-only planning artifacts cannot be edited.",
 		parameters: Type.Object({
 			content: Type.String({ minLength: 1 }),
 			replaceExisting: Type.Optional(Type.Boolean()),
@@ -436,7 +394,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 				throw new Error("Plan writing requires active planner mode.");
 			const current = server;
 			current.refresh();
-			if (current.state.content.trim() && !input.replaceExisting)
+			if (current.readActiveContent().trim() && !input.replaceExisting)
 				throw new Error(
 					"The plan already exists in context. Use edit_plan for targeted changes. Do not transcribe the entire plan.",
 				);
@@ -457,7 +415,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		}
 		if (mode === "programming") {
 			try {
-				server?.assertRevision(approvedRevision ?? "");
+				server?.assertWorkspaceRevision(approvedRevision ?? "");
 			} catch {
 				return {
 					block: true,
@@ -499,13 +457,15 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		lastAssistantText = "";
 		server.update({ status: mode === "planner" ? "planning" : "executing", activity: "", result: "" });
 		if (mode === "planner") {
+			if (!plannerTemplate) throw new Error("The active planner template is unavailable.");
 			configurePlannerInspection(event.prompt);
 			server.refresh();
 			return {
 				systemPrompt: buildPlannerPrompt(
 					{ ...event.systemPromptOptions, cwd: ctx.cwd },
 					server.path,
-					server.state.content,
+					server.readAllPlans(),
+					plannerTemplate,
 					inspectionAllowed,
 					readPlannerSystemPrompt(ctx),
 				),
@@ -550,6 +510,7 @@ export function registerPlanWeb(pi: ExtensionAPI, options: PlanExtensionOptions 
 		owner = undefined;
 		approvedRevision = undefined;
 		inspectionAllowed = false;
+		plannerTemplate = undefined;
 		importedImagePaths.clear();
 		workflowDefaultModel = undefined;
 		if (savedTools) pi.setActiveTools(savedTools);

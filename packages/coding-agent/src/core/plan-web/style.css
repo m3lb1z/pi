@@ -20,11 +20,13 @@
 
 * { box-sizing: border-box; }
 body { min-width: 320px; margin: 0; background: var(--bg); color: var(--text); }
-button, textarea { font: inherit; }
+button, select, textarea { font: inherit; }
 button { color: inherit; }
 .app-shell { min-height: 100vh; }
 .navbar { position: sticky; top: 0; z-index: 50; display: flex; height: 58px; align-items: center; gap: 18px; padding: 8px 18px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(14px); }
 .navbar h1 { flex: 0 0 auto; margin: 0 auto 0 0; font-size: 1rem; line-height: 1; letter-spacing: -.015em; }
+.planner-selector { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: .78rem; font-weight: 700; }
+.planner-selector select { min-height: 36px; max-width: 190px; padding: 5px 28px 5px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text); }
 .navbar-actions { display: flex; min-width: 0; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; }
 .navbar-actions::-webkit-scrollbar { display: none; }
 .navbar .button { min-height: 36px; padding: 6px 10px; white-space: nowrap; }
@@ -35,7 +37,7 @@ button { color: inherit; }
 .status[data-connected="true"] .status-dot { background: #22c55e; box-shadow: 0 0 0 3px #22c55e20; }
 .button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel); font-weight: 650; cursor: pointer; transition: border-color .15s, background .15s, transform .15s; }
 .button:hover:not(:disabled) { border-color: #94a3b8; background: var(--panel-subtle); transform: translateY(-1px); }
-.button:focus-visible, .icon-button:focus-visible, .annotation-link:focus-visible, .sidebar-tabs button:focus-visible, textarea:focus-visible { outline: 3px solid #3b82f655; outline-offset: 2px; }
+.button:focus-visible, .icon-button:focus-visible, .annotation-link:focus-visible, .sidebar-tabs button:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid #3b82f655; outline-offset: 2px; }
 .button:disabled { cursor: default; opacity: .42; }
 .button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
 .button.primary:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
@@ -192,6 +194,8 @@ button { color: inherit; }
 
 @media (max-width: 800px) {
 	.navbar { gap: 10px; padding-inline: 12px; }
+	.planner-selector span { display: none; }
+	.planner-selector select { max-width: 130px; }
 	.navbar .button { width: 36px; flex: 0 0 36px; padding: 0; }
 	.navbar .button span { display: none; }
 	.plan-content { padding: 26px 20px 48px; }

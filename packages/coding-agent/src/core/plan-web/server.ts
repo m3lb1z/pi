@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
+	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
@@ -28,12 +29,19 @@ export type PlanStatus =
 	| "failed";
 export interface PlanState {
 	project: string;
+	planners: PlanSummary[];
+	activePlanner: string;
+	viewedPlanner: string;
 	content: string;
 	revision: string;
 	attachments: PlanAttachment[];
 	status: PlanStatus;
 	activity: string;
 	result: string;
+}
+export interface PlanSummary {
+	name: string;
+	hasContent: boolean;
 }
 export interface PlanAttachment {
 	id: string;
@@ -42,7 +50,7 @@ export interface PlanAttachment {
 	size: number;
 }
 export interface PlanAction {
-	action: "approve" | "revise" | "save" | "discard" | "new";
+	action: "approve" | "revise" | "save" | "discard";
 	revision: string;
 	feedback: string;
 }
@@ -53,29 +61,44 @@ const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_ATTACHMENT_TOTAL_BYTES = 50 * 1024 * 1024;
 const MAX_ATTACHMENTS = 20;
 const ATTACHMENT_ID_PATTERN = /^[a-f0-9]{24}$/;
+const PLANNER_NAME_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 const SUPPORTED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 /** One listening process owns a project plan. Approval always rechecks the disk revision. */
 export class PlanServer {
-	readonly path: string;
 	readonly token = randomBytes(8).toString("hex");
 	readonly state: PlanState;
-	private readonly attachmentDirectory: string;
-	private readonly attachmentManifestPath: string;
+	private readonly directory: string;
 	private server: Server;
 	private clients = new Set<ServerResponse>();
+	private watchedPaths = new Set<string>();
 	private actionPending = false;
 	private port = 7337;
 	private watching = false;
 	private closed = false;
 	private onAction: (action: PlanAction) => Promise<void>;
 
-	constructor(path: string, project: string, onAction: (action: PlanAction) => Promise<void>) {
-		this.path = path;
-		this.attachmentDirectory = `${path}.attachments`;
-		this.attachmentManifestPath = `${path}.attachments.json`;
+	constructor(
+		directory: string,
+		project: string,
+		initialPlanner: string,
+		onAction: (action: PlanAction) => Promise<void>,
+	) {
+		if (!PLANNER_NAME_PATTERN.test(initialPlanner)) throw new Error(`Invalid planner name: ${initialPlanner}`);
+		this.directory = directory;
 		this.onAction = onAction;
-		this.state = { project, content: "", revision: "", attachments: [], status: "draft", activity: "", result: "" };
+		this.state = {
+			project,
+			planners: [],
+			activePlanner: initialPlanner,
+			viewedPlanner: initialPlanner,
+			content: "",
+			revision: "",
+			attachments: [],
+			status: "draft",
+			activity: "",
+			result: "",
+		};
 		this.server = createServer((request, response) => {
 			void this.handle(request, response).catch((error: unknown) => {
 				if (!response.headersSent) response.writeHead(409, { "Content-Type": "application/json" });
@@ -88,7 +111,24 @@ export class PlanServer {
 		return `http://localhost:${this.port}/#${this.token}`;
 	}
 
-	async start(port?: number, replacing = false): Promise<void> {
+	get path(): string {
+		return this.plannerPath(this.state.activePlanner);
+	}
+
+	private plannerPath(name: string): string {
+		if (!PLANNER_NAME_PATTERN.test(name)) throw new Error(`Invalid planner name: ${name}`);
+		return join(this.directory, `${name}.md`);
+	}
+
+	private attachmentDirectory(name = this.state.activePlanner): string {
+		return `${this.plannerPath(name)}.attachments`;
+	}
+
+	private attachmentManifestPath(name = this.state.activePlanner): string {
+		return `${this.plannerPath(name)}.attachments.json`;
+	}
+
+	async start(port?: number): Promise<void> {
 		const listen = async (candidate: number): Promise<void> => {
 			await new Promise<void>((resolve, reject) => {
 				const cleanup = (): void => {
@@ -118,10 +158,10 @@ export class PlanServer {
 		const address = this.server.address();
 		if (address && typeof address !== "string") this.port = address.port;
 		try {
-			mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
+			mkdirSync(this.directory, { recursive: true, mode: 0o700 });
 			if (!existsSync(this.path)) this.write("");
-			else if (!replacing) this.refresh();
-			watchFile(this.path, { interval: 250, persistent: false }, this.fileChanged);
+			else this.refresh();
+			this.refreshPlanners();
 			this.watching = true;
 		} catch (error) {
 			await this.close();
@@ -132,36 +172,126 @@ export class PlanServer {
 
 	private fileChanged = (): void => {
 		try {
-			this.refresh();
+			this.refreshPlanners();
+			this.refreshViewed();
 		} catch (error) {
 			this.update({ status: "blocked", result: String(error) });
 		}
 	};
 
 	refresh(): void {
-		const raw = existsSync(this.path) ? readFileSync(this.path, "utf8") : "";
+		const active = this.readPlanner(this.state.activePlanner);
+		if (this.state.viewedPlanner === this.state.activePlanner) this.applyViewed(active);
+	}
+
+	private readPlanner(name: string): { content: string; revision: string; attachments: PlanAttachment[] } {
+		const path = this.plannerPath(name);
+		const raw = existsSync(path) ? readFileSync(path, "utf8") : "";
 		if (Buffer.byteLength(raw) > MAX_PLAN_BYTES) throw new Error("Plan exceeds 1 MiB.");
-		const manifest = existsSync(this.attachmentManifestPath) ? readFileSync(this.attachmentManifestPath, "utf8") : "";
+		const manifestPath = this.attachmentManifestPath(name);
+		const manifest = existsSync(manifestPath) ? readFileSync(manifestPath, "utf8") : "";
 		const attachments = this.parseAttachmentManifest(manifest);
 		const revision = createHash("sha256").update(raw).update("\0").update(manifest).digest("hex");
-		if (revision === this.state.revision) return;
 		let content = raw;
 		if (raw) {
 			const firstLine = raw.split("\n", 1)[0];
 			const expected = `<!-- pi-plan-project: ${JSON.stringify(this.state.project)} -->`;
 			if (firstLine !== expected)
 				throw new Error(
-					"The saved plan does not belong to this project or has no valid project header. Use /plan <task> to replace it.",
+					"The saved planning artifact does not belong to this project or has no valid project header.",
 				);
 			content = raw.slice(firstLine.length + 1);
 		}
+		return { content, revision, attachments };
+	}
+
+	private applyViewed(plan: { content: string; revision: string; attachments: PlanAttachment[] }): void {
+		if (plan.revision === this.state.revision) return;
 		this.update({
-			content,
-			revision,
-			attachments,
-			status: this.state.status === "planning" ? "planning" : "draft",
+			...plan,
+			...(this.state.viewedPlanner === this.state.activePlanner
+				? { status: this.state.status === "planning" ? "planning" : "draft" }
+				: {}),
 			result: "",
 		});
+	}
+
+	private refreshViewed(): void {
+		this.applyViewed(this.readPlanner(this.state.viewedPlanner));
+	}
+
+	private watchPlanner(name: string): void {
+		const path = this.plannerPath(name);
+		if (this.watchedPaths.has(path)) return;
+		watchFile(path, { interval: 250, persistent: false }, this.fileChanged);
+		this.watchedPaths.add(path);
+	}
+
+	private refreshPlanners(): void {
+		const names = readdirSync(this.directory, { withFileTypes: true })
+			.filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+			.map((entry) => entry.name.slice(0, -3))
+			.filter((name) => PLANNER_NAME_PATTERN.test(name))
+			.sort((left, right) => (left === "general" ? -1 : right === "general" ? 1 : left.localeCompare(right)));
+		for (const name of names) this.watchPlanner(name);
+		const planners = names.map((name) => ({ name, hasContent: Boolean(this.readPlanner(name).content.trim()) }));
+		if (JSON.stringify(planners) !== JSON.stringify(this.state.planners)) this.update({ planners });
+	}
+
+	activatePlanner(name: string): void {
+		const path = this.plannerPath(name);
+		if (!existsSync(path)) {
+			const previous = this.state.activePlanner;
+			this.state.activePlanner = name;
+			try {
+				this.write("");
+			} catch (error) {
+				this.state.activePlanner = previous;
+				throw error;
+			}
+		}
+		this.state.activePlanner = name;
+		this.state.viewedPlanner = name;
+		this.watchPlanner(name);
+		const plan = this.readPlanner(name);
+		this.update({
+			...plan,
+			activePlanner: name,
+			viewedPlanner: name,
+			status: plan.content.trim() ? "review" : "draft",
+			activity: "",
+			result: "",
+		});
+		this.refreshPlanners();
+	}
+
+	viewPlanner(name: string): void {
+		if (!this.state.planners.some((planner) => planner.name === name)) throw new Error("Planner not found.");
+		this.state.viewedPlanner = name;
+		this.update({ ...this.readPlanner(name), viewedPlanner: name });
+	}
+
+	readActiveContent(): string {
+		return this.readPlanner(this.state.activePlanner).content;
+	}
+
+	readAllPlans(): Array<{ name: string; content: string; revision: string; active: boolean }> {
+		this.refreshPlanners();
+		return this.state.planners.map(({ name }) => {
+			const plan = this.readPlanner(name);
+			return { name, content: plan.content, revision: plan.revision, active: name === this.state.activePlanner };
+		});
+	}
+
+	workspaceRevision(plans = this.readAllPlans()): string {
+		const hash = createHash("sha256");
+		for (const plan of plans) hash.update(plan.name).update("\0").update(plan.revision).update("\0");
+		return hash.digest("hex");
+	}
+
+	assertWorkspaceRevision(revision: string): void {
+		if (this.closed || revision !== this.workspaceRevision())
+			throw new Error("The approved planning artifacts changed.");
 	}
 
 	private parseAttachmentManifest(raw: string): PlanAttachment[] {
@@ -190,21 +320,23 @@ export class PlanServer {
 		return attachments;
 	}
 
-	private attachmentPath(attachment: PlanAttachment): string {
-		return join(this.attachmentDirectory, `${attachment.id}.${attachment.mimeType.split("/")[1]}`);
+	private attachmentPath(attachment: PlanAttachment, name = this.state.activePlanner): string {
+		return join(this.attachmentDirectory(name), `${attachment.id}.${attachment.mimeType.split("/")[1]}`);
 	}
 
 	private writeAttachmentManifest(attachments: PlanAttachment[]): void {
-		mkdirSync(dirname(this.attachmentManifestPath), { recursive: true, mode: 0o700 });
-		const temporary = `${this.attachmentManifestPath}.${this.token}.tmp`;
+		const manifestPath = this.attachmentManifestPath();
+		mkdirSync(dirname(manifestPath), { recursive: true, mode: 0o700 });
+		const temporary = `${manifestPath}.${this.token}.tmp`;
 		writeFileSync(temporary, `${JSON.stringify(attachments, null, 2)}\n`, { mode: 0o600, flag: "wx" });
-		renameSync(temporary, this.attachmentManifestPath);
+		renameSync(temporary, manifestPath);
 	}
 
 	async addAttachment(name: string, bytes: Uint8Array): Promise<PlanAttachment> {
 		if (this.closed) throw new Error("Plan session is closed.");
 		if (!name || name.length > 255 || /[\u0000-\u001f\u007f]/.test(name)) throw new Error("Invalid image name.");
-		if (this.state.attachments.length >= MAX_ATTACHMENTS)
+		const activeAttachments = this.readPlanner(this.state.activePlanner).attachments;
+		if (activeAttachments.length >= MAX_ATTACHMENTS)
 			throw new Error(`A plan supports up to ${MAX_ATTACHMENTS} images.`);
 		if (bytes.byteLength === 0 || bytes.byteLength > MAX_ATTACHMENT_BYTES)
 			throw new Error("Each image must be at most 20 MiB.");
@@ -213,8 +345,7 @@ export class PlanServer {
 		const processed = await processImage(bytes, detectedMimeType);
 		if (!processed.ok) throw new Error(processed.message);
 		const data = Buffer.from(processed.data, "base64");
-		const totalBytes =
-			this.state.attachments.reduce((total, attachment) => total + attachment.size, 0) + data.byteLength;
+		const totalBytes = activeAttachments.reduce((total, attachment) => total + attachment.size, 0) + data.byteLength;
 		if (totalBytes > MAX_ATTACHMENT_TOTAL_BYTES) throw new Error("Plan images exceed the 50 MiB total limit.");
 		const attachment: PlanAttachment = {
 			id: randomBytes(12).toString("hex"),
@@ -222,11 +353,11 @@ export class PlanServer {
 			mimeType: processed.mimeType,
 			size: data.byteLength,
 		};
-		mkdirSync(this.attachmentDirectory, { recursive: true, mode: 0o700 });
+		mkdirSync(this.attachmentDirectory(), { recursive: true, mode: 0o700 });
 		writeFileSync(this.attachmentPath(attachment), data, { mode: 0o600, flag: "wx" });
 		const previousStatus = this.state.status;
 		try {
-			this.writeAttachmentManifest([...this.state.attachments, attachment]);
+			this.writeAttachmentManifest([...activeAttachments, attachment]);
 		} catch (error) {
 			rmSync(this.attachmentPath(attachment));
 			throw error;
@@ -237,20 +368,22 @@ export class PlanServer {
 	}
 
 	removeAttachment(id: string): void {
-		const attachment = this.state.attachments.find((item) => item.id === id);
+		const activeAttachments = this.readPlanner(this.state.activePlanner).attachments;
+		const attachment = activeAttachments.find((item) => item.id === id);
 		if (!attachment) throw new Error("Image attachment not found.");
 		const previousStatus = this.state.status;
-		this.writeAttachmentManifest(this.state.attachments.filter((item) => item.id !== id));
+		this.writeAttachmentManifest(activeAttachments.filter((item) => item.id !== id));
 		rmSync(this.attachmentPath(attachment), { force: true });
 		this.refresh();
 		if (previousStatus === "review") this.update({ status: "review" });
 	}
 
 	clearAttachments(): void {
-		let attachments = this.state.attachments;
-		if (attachments.length === 0 && existsSync(this.attachmentManifestPath)) {
+		let attachments = this.readPlanner(this.state.activePlanner).attachments;
+		const manifestPath = this.attachmentManifestPath();
+		if (attachments.length === 0 && existsSync(manifestPath)) {
 			try {
-				attachments = this.parseAttachmentManifest(readFileSync(this.attachmentManifestPath, "utf8"));
+				attachments = this.parseAttachmentManifest(readFileSync(manifestPath, "utf8"));
 			} catch {
 				// Replacing a plan must still be able to replace a malformed attachment manifest.
 			}
@@ -261,12 +394,16 @@ export class PlanServer {
 	}
 
 	readAttachmentContent(): Array<{ type: "image"; data: string; mimeType: string }> {
-		this.refresh();
-		return this.state.attachments.map((attachment) => ({
+		const attachments = this.readPlanner(this.state.activePlanner).attachments;
+		return attachments.map((attachment) => ({
 			type: "image",
 			data: readFileSync(this.attachmentPath(attachment)).toString("base64"),
 			mimeType: attachment.mimeType,
 		}));
+	}
+
+	readActiveAttachments(): PlanAttachment[] {
+		return this.readPlanner(this.state.activePlanner).attachments;
 	}
 
 	write(content: string): void {
@@ -277,6 +414,7 @@ export class PlanServer {
 		writeFileSync(temporary, raw, { mode: 0o600, flag: "wx" });
 		renameSync(temporary, this.path);
 		this.refresh();
+		this.refreshPlanners();
 	}
 
 	update(patch: Partial<PlanState>): void {
@@ -292,14 +430,16 @@ export class PlanServer {
 
 	assertRevision(revision: string, requireContent = true): void {
 		if (this.closed) throw new Error("Plan session is closed.");
-		this.refresh();
-		if (revision !== this.state.revision || (requireContent && !this.state.content.trim()))
+		if (this.state.viewedPlanner !== this.state.activePlanner)
+			throw new Error("Only the active planner can be changed or approved.");
+		const active = this.readPlanner(this.state.activePlanner);
+		if (revision !== active.revision || (requireContent && !active.content.trim()))
 			throw new Error("The plan changed or is empty. Review the current version.");
 	}
 
 	async close(): Promise<void> {
 		this.closed = true;
-		if (this.watching) unwatchFile(this.path, this.fileChanged);
+		if (this.watching) for (const path of this.watchedPaths) unwatchFile(path, this.fileChanged);
 		for (const client of this.clients) client.end();
 		this.clients.clear();
 		this.server.closeAllConnections();
@@ -359,16 +499,35 @@ export class PlanServer {
 					"Content-Length": attachment.size,
 					"Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(attachment.name)}`,
 				})
-				.end(readFileSync(this.attachmentPath(attachment)));
+				.end(readFileSync(this.attachmentPath(attachment, this.state.viewedPlanner)));
 			return;
 		}
 		const validOrigin = hosts.some((host) => request.headers.origin === `http://${host}`);
+		if (request.method === "POST" && url.pathname === "/view") {
+			if (!validOrigin || request.headers["content-type"] !== "application/json") {
+				response.writeHead(403).end(JSON.stringify({ error: "Invalid request origin or content type." }));
+				return;
+			}
+			let body = "";
+			for await (const chunk of request) {
+				body += chunk.toString();
+				if (Buffer.byteLength(body) > 4096) throw new Error("Request too large.");
+			}
+			const value: unknown = JSON.parse(body);
+			if (!value || typeof value !== "object" || typeof (value as { planner?: unknown }).planner !== "string")
+				throw new Error("Invalid planner selection.");
+			this.viewPlanner((value as { planner: string }).planner);
+			response.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+			return;
+		}
 		if (request.method === "POST" && url.pathname === "/attachments") {
 			if (!validOrigin) {
 				response.writeHead(403).end(JSON.stringify({ error: "Invalid request origin." }));
 				return;
 			}
 			if (this.actionPending) throw new Error("An action is already in progress.");
+			if (this.state.viewedPlanner !== this.state.activePlanner)
+				throw new Error("Only the active planner accepts images.");
 			if (!["draft", "review", "blocked", "failed"].includes(this.state.status))
 				throw new Error("Wait for Pi to finish before attaching images.");
 			const encodedName = request.headers["x-plan-file-name"];
@@ -402,6 +561,8 @@ export class PlanServer {
 				return;
 			}
 			if (this.actionPending) throw new Error("An action is already in progress.");
+			if (this.state.viewedPlanner !== this.state.activePlanner)
+				throw new Error("Only the active planner can remove images.");
 			if (!["draft", "review", "blocked", "failed"].includes(this.state.status))
 				throw new Error("Wait for Pi to finish before removing images.");
 			this.actionPending = true;
@@ -430,8 +591,8 @@ export class PlanServer {
 		if (!value || typeof value !== "object") throw new Error("Invalid action.");
 		const action = value as Partial<PlanAction>;
 		if (
-			!(["approve", "revise", "save", "discard", "new"] as const).includes(
-				action.action as "approve" | "revise" | "save" | "discard" | "new",
+			!(["approve", "revise", "save", "discard"] as const).includes(
+				action.action as "approve" | "revise" | "save" | "discard",
 			) ||
 			typeof action.revision !== "string" ||
 			typeof action.feedback !== "string"
@@ -449,8 +610,6 @@ export class PlanServer {
 			throw new Error("Wait for Pi to finish and enter your observations.");
 		if (action.action === "save" && !idleStatuses.includes(this.state.status))
 			throw new Error("Wait for Pi to finish before editing the plan.");
-		if (action.action === "new" && (!action.feedback.trim() || !idleStatuses.includes(this.state.status)))
-			throw new Error("Wait for Pi to finish and describe the new task.");
 		if (action.action === "discard" && !idleStatuses.includes(this.state.status))
 			throw new Error("Wait for Pi to finish before discarding the plan.");
 		this.actionPending = true;

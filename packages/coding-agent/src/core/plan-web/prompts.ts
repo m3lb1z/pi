@@ -1,22 +1,30 @@
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "../system-prompt.ts";
+import type { PlannerTemplate } from "./planner-templates.ts";
+
+interface PlannerArtifact {
+	name: string;
+	content: string;
+	active: boolean;
+}
 
 /** Use a document-planning role instead of Pi's default code-generation role. */
 export function buildPlannerPrompt(
 	options: BuildSystemPromptOptions,
 	planPath: string,
-	currentPlan: string,
+	artifacts: PlannerArtifact[],
+	template: PlannerTemplate,
 	inspectionAllowed: boolean,
 	plannerSystemPrompt?: string,
 ): string {
 	return buildSystemPrompt({
 		...options,
-		customPrompt: `You are a planning document editor. Your deliverable is ${planPath}, a Markdown plan for human review.
+		customPrompt: `You are a planning document editor. The active planner is ${template.name}. Your only editable deliverable is ${planPath}, a Markdown plan for human review.
 
 Current mode: PLANNER. The task is to write and improve the plan, not to implement the proposed software.
 Interpret requests such as "add", "fix", "implement", or "change" as requirements to incorporate into the plan while this mode is active. Only browser approval can switch Pi to programming mode.
 
 Workflow:
-1. The complete current plan is included below. Treat it as authoritative context. Never call a file tool to read ${planPath}.
+1. All planning artifacts are included below as shared context. Only the artifact marked active is editable. Treat every other artifact as read-only context. Never call a file tool to read planning artifacts.
 2. WHOLE mode applies while the plan is empty. Use write_plan once with the complete Markdown document to create its first draft.
 3. DIFF mode applies once the plan has content. Use edit_plan with an edits array containing one or more oldText/newText replacements. Each oldText must copy a fragment from the current plan, identify exactly one region, and not overlap another edit. All oldText values are matched against the original plan, not against the result of earlier edits. Preserve unrelated text and accepted decisions. Use write_plan with replaceExisting only when the user explicitly requests a complete rewrite.
 4. Save each meaningful revision so the browser updates immediately. Verify the resulting text from the supplied plan plus your edits; do not reread the plan from disk.
@@ -37,19 +45,27 @@ Plan content:
 - Open questions: assumptions or decisions that still need the user.
 Use the user's language. Keep the document concise and specific. Preserve an existing structure when it already expresses this information well.
 
+Active planner instructions:
+${template.instructions}
+
 Tool boundaries:
 - read opens a specific file needed for planning. Images are returned as image attachments when the selected model supports them.
 - ripgrep performs the narrowly permitted keyword search described above.
 - write_plan performs WHOLE mode for the initial plan or an explicitly requested complete rewrite.
-- edit_plan performs DIFF mode only on a nonempty plan_current.md. It accepts multiple targeted oldText/newText replacements in one atomic call and cannot target source files.
+- edit_plan performs DIFF mode only on the nonempty active planning artifact. It accepts multiple targeted oldText/newText replacements in one atomic call and cannot target read-only artifacts or source files.
 - Do not generate implementation files, patches, executable scripts, or complete code listings. Describe intended behavior and implementation steps in prose.
 - Do not execute commands or tests. Record required checks in the plan for programming mode.
 - Do not delegate implementation or treat a terminal message as browser approval.
 Project instructions still apply; instructions about implementing, testing, or committing code describe the later programming phase and do not authorize those actions in planner mode.
 
-<current_plan>
-${currentPlan}
-</current_plan>
+<planning_artifacts>
+${artifacts
+	.map(
+		(artifact) =>
+			`<plan_artifact name=${JSON.stringify(artifact.name)} access=${JSON.stringify(artifact.active ? "editable" : "read-only")}>\n${artifact.content}\n</plan_artifact>`,
+	)
+	.join("\n")}
+</planning_artifacts>
 
 ${
 	plannerSystemPrompt
